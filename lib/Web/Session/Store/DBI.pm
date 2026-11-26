@@ -9,7 +9,9 @@ our $VERSION = '1.0.0';
 # Connection reuse (default): returns a handle cached by DBI->connect_cached()
 # (which pings it and reconnects if needed), opened with the attributes $attr
 # that the store uses without reuse. Returns undef if the store is already
-# connected, if "noreuse" is set or if a Handle is given.
+# connected, if "noreuse" is set or if a Handle is given. With Commit, the
+# Postgres store uses its connection pool instead, unless KeepConnections is
+# 0 (see Store/Postgres.pm).
 #
 # Why AutoCommit differs between stores: each store opens its connection
 # with the attributes of the Apache::Session store it derives from.

@@ -10,14 +10,22 @@ our @ISA =
   qw(Web::Session::Store::DBI Apache::Session::Store::Postgres);
 our $VERSION = '1.0.0';
 
-# KeepConnections: a pool of connections, per process and per data source
-# (DataSource + UserName), lent to one store at a time: two sessions tied
-# together (a session and its persistent session) never share a connection,
-# so never a transaction. Used only when KeepConnections and Commit are set,
-# noreuse isn't and no Handle is given; otherwise connection() is the one of
-# the other stores (see _connection() in Store/DBI.pm).
+# A pool of connections, per process and per data source (DataSource +
+# UserName), lent to one store at a time: two sessions tied together (a
+# session and its persistent session) never share a connection, so never a
+# transaction. With the connection reuse of the other stores
+# (connect_cached(), see _connection() in Store/DBI.pm), they share the
+# handle and its transaction: untying one commits or rolls back what the
+# other has done so far.
 #
-# On that path each statement is its own transaction (AutoCommit): the store
+# So the pool is the default connection reuse of this store when Commit is
+# set, noreuse isn't and no Handle is given. KeepConnections => 0 gives back
+# the connect_cached() handle of the other stores. Without Commit, writes
+# must not be committed (AutoCommit off, rolled back at untie), which the
+# pool, where each statement commits itself, can't do: connect_cached() is
+# kept.
+#
+# In the pool, each statement is its own transaction (AutoCommit): the store
 # reads without a lock (Apache::Session::Store::DBI's materialize, no FOR
 # UPDATE; the lock manager is Null), so a transaction around a tie protected
 # nothing and cost a BEGIN and a COMMIT round trip each.
@@ -82,7 +90,7 @@ sub connection {
     $self->_forgetInheritedHandle;
     return if defined $self->{dbh};
     my $args = $session->{args};
-    unless ( $args->{KeepConnections}
+    unless ( ( $args->{KeepConnections} // 1 )
         and $args->{Commit}
         and !$args->{noreuse}
         and !exists $args->{Handle} )

@@ -3,7 +3,8 @@ use warnings;
 no warnings 'once';
 use Test::More;
 
-# KeepConnections of Web::Session::Store::Postgres, without database: DBI
+# Connection pool of Web::Session::Store::Postgres (used by default with
+# Commit, disabled by KeepConnections => 0), without database: DBI
 # connections are mocked
 plan skip_all => 'DBI and Apache::Session are needed for this test'
   unless eval { require DBI; require Apache::Session::Store::Postgres; 1 };
@@ -92,11 +93,11 @@ local *DBI::connect_cached = sub {
 };
 use warnings 'redefine';
 
+# No KeepConnections: the pool is the default
 my %base = (
-    DataSource      => 'dbi:Pg:dbname=sessions',
-    UserName        => 'u',
-    Commit          => 1,
-    KeepConnections => 1,
+    DataSource => 'dbi:Pg:dbname=sessions',
+    UserName   => 'u',
+    Commit     => 1,
 );
 my $key = "$base{DataSource}\0u";
 my $n   = 0;
@@ -120,6 +121,25 @@ sub reset_pool {
 
 sub pool { $Web::Session::Store::Postgres::IDLE{$key} || [] }
 sub idle { scalar @{ pool() } }
+
+# The pool is used by default with Commit, and with KeepConnections => 1
+foreach (
+    [ 'Default with Commit', () ],
+    [ 'KeepConnections => 1', KeepConnections => 1 ],
+  )
+{
+    my ( $label, @args ) = @$_;
+    reset_pool();
+    {
+        my $store = $class->new;
+        $store->insert( session(@args) );
+        is( scalar @FakeDbh::connects, 1, "$label: one connection" );
+        ok( !$FakeDbh::connects[0]->[3], "$label: not connect_cached()" );
+        is( $store->{pool_key}, $key, "$label: pooled connection" );
+        ok( $FakeDbh::connects[0]->[1]->{AutoCommit}, "$label: AutoCommit on" );
+    }
+    is( idle(), 1, "$label: connection given back to the pool" );
+}
 
 # Connection attributes
 reset_pool();
@@ -313,11 +333,11 @@ reset_pool();
 is( idle(),                0, 'Fork: lent connection not given back' );
 is( $FakeDbh::disconnects, 0, 'Fork: lent connection not closed' );
 
-# Without KeepConnections, or without Commit, or with noreuse or a Handle:
-# no pool
+# With KeepConnections => 0 (the previous behaviour), or without Commit, or
+# with noreuse or a Handle: no pool
 foreach (
-    [ 'Without KeepConnections', KeepConnections => 0 ],
-    [ 'Without Commit',          Commit          => 0 ],
+    [ 'KeepConnections => 0', KeepConnections => 0 ],
+    [ 'Without Commit',       Commit          => 0 ],
   )
 {
     my ( $label, @args ) = @$_;

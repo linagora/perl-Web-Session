@@ -19,6 +19,8 @@ package SQLBackendTests;
 #               (PostgreSQL folds unquoted names to lower case)
 #  - gin:     1 to compare searchOn() results with and without GinIndex
 #  - args:    other arguments given to the backend (KeepConnections...)
+#  - pool:    if set, 1 if sessions must use the connection pool of the
+#             PostgreSQL store, 0 if they must not
 #  - todo:    known bugs of this backend: { test group => reason }. Tests of
 #             these groups are run as TODO tests and may die without
 #             breaking the rest of the suite
@@ -295,6 +297,27 @@ sub run_tests {
         $s{$_} = $data{dwho}->{$_} foreach ( keys %{ $data{dwho} } );
         my $rid  = $s{_session_id};
         my $rdbh = $dbhOf->( \%s );
+
+        # Connection pool of the PostgreSQL store (see the "pool" parameter)
+        my $pooled = defined tied(%s)->{object_store}->{pool_key};
+        is(
+            $pooled  ? 1            : 0,
+            $o{pool} ? 1            : 0,
+            $o{pool} ? 'pool: used' : 'pool: not used'
+        ) if ( exists $o{pool} );
+
+        # Two sessions tied at once never share a pooled connection, so never
+        # a transaction
+        if ($pooled) {
+            my %other;
+            tie %other, $class, undef, $rargs;
+            isnt( refaddr( $dbhOf->( \%other ) ),
+                refaddr($rdbh),
+                'pool: two sessions tied at once, two handles' );
+            my $oid = $other{_session_id};
+            untie %other;
+            $dbh->do( "DELETE FROM $table WHERE id = ?", undef, $oid );
+        }
         untie %s;
         ok( $rdbh->{Active}, 'reuse: connection kept at untie' );
 
@@ -355,8 +378,8 @@ sub run_tests {
         );
         tie %s, $class, $rid, $rargs;
 
-        # KeepConnections closes a connection that met an error
-        if ( $args->{KeepConnections} ) {
+        # The pool closes a connection that met an error
+        if ($pooled) {
             ok( $dbhOf->( \%s )->{Active},
                 'pool: connection available after a failure' );
         }

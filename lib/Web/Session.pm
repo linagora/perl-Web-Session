@@ -42,6 +42,13 @@ and reconnects if the connection was lost. It is opened with the attributes
 that these backends always used (C<AutoCommit> in particular) and gets the
 same flags (C<pg_enable_utf8>, C<mysql_enable_utf8>, C<sqlite_unicode>).
 
+PostgreSQL backends (PgJSON and its Postgres alias, not Patroni) use a pool
+of connections instead when C<Commit> is set: each connection is lent to one
+session at a time, so sessions tied together never share a transaction, with
+error handling, idle timeouts and fork safety. See "Connection pool
+(KeepConnections)" in L<Web::Session::PgJSON>; C<KeepConnections =E<gt> 0>
+gives back the C<connect_cached()> handle described here.
+
 To get the previous behaviour, one connection opened when a session is tied
 and closed at untie, set the C<noreuse> argument to a true value. Example
 with Lemonldap::NG, to disable the reuse in C<globalStorageOptions>:
@@ -68,7 +75,8 @@ Things to know:
 
 Each process (Apache or FastCGI worker...) keeps its connection(s) open: size
 the maximum number of connections of the database server for the number of
-processes, or use C<noreuse>.
+processes, or use C<noreuse>. With the PostgreSQL pool, a process keeps up to
+C<MaxIdle> idle connections, plus one for each session tied at the moment.
 
 =item *
 
@@ -86,19 +94,21 @@ connection).
 
 =item *
 
-Backends that use transactions (C<AutoCommit> off: PgJSON, Patroni and
-SQLite) end the transaction
-each time a session is untied, even after a failure: it is committed if
-C<Commit> is set, rolled back otherwise. So set C<Commit =E<gt> 1> with these
-backends (SQLite and Patroni set it by default). No transaction, and so no
-row lock taken by a write, stays open on the connection.
+Backends that use transactions (C<AutoCommit> off: Patroni, SQLite, and
+PgJSON outside its pool) end the transaction each time a session is untied,
+even after a failure: it is committed if C<Commit> is set, rolled back
+otherwise. So set C<Commit =E<gt> 1> with these backends (SQLite and Patroni
+set it by default; PgJSON needs it to use its pool). No transaction, and so
+no row lock taken by a write, stays open on the connection.
 
 =item *
 
 Sessions tied at the same time in a process share the connection, and so the
 transaction: untying one of them also commits (or rolls back) the changes
 already done in the others. Use C<noreuse> if you need to keep several
-sessions tied at once with independent transactions.
+sessions tied at once with independent transactions. This doesn't apply to
+the PostgreSQL pool (PgJSON and Postgres with C<Commit>), which lends a
+connection to one session at a time.
 
 =item *
 
@@ -109,10 +119,6 @@ attributes and share it; with the other backends, a process that also calls
 search methods keeps two connections.
 
 =back
-
-PostgreSQL backends (PgJSON and its Postgres alias) also provide a pool of
-connections lent to one session at a time, with timeouts and error handling:
-see the C<KeepConnections> option in L<Web::Session::PgJSON>.
 
 =head1 UNCHANGED SESSIONS ARE NOT REWRITTEN
 
