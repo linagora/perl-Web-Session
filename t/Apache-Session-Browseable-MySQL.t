@@ -14,8 +14,6 @@ run_tests(
     ],
     index => 'uid _whatToTrace _session_kind _utime _lastSeen',
     todo  => {
-        deleteNot       => 'sessions without the "not" field are never deleted',
-        deleteAndNot    => 'sessions without the "not" field are never deleted',
         ruleNotModified => '"not" values of the rule are escaped in place',
     },
 );

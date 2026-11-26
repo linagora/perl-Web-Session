@@ -217,6 +217,53 @@ like( $err, qr/deleteIfLowerThan: /, 'SQL failure: message on STDERR' );
 };
 is( $ret, 'false', 'SQL failure: returns false in scalar context' );
 like( $err, qr/deleteIfLowerThan: /, 'SQL failure: message on STDERR' );
+# deleteIfLowerThan with "or"
+$ids = reset_sessions(
+    a => { _utime => 100, _lastSeen => 400 },
+    b => { _utime => 200, _lastSeen => 400 },
+    c => { _utime => 300, _lastSeen => 400 },
+);
+@res = $class->deleteIfLowerThan( $args, { or => { _utime => 250 } } );
+is_deeply( \@res, [ 1, 2 ], 'or: 2 sessions deleted' );
+is( remaining($ids), 'c', 'or: session "c" remains' );
+
+$ids = reset_sessions(
+    a => { _utime => 100, _lastSeen => 400 },
+    b => { _utime => 400, _lastSeen => 100 },
+    c => { _utime => 400, _lastSeen => 400 },
+);
+ok(
+    $class->deleteIfLowerThan(
+        $args, { or => { _utime => 250, _lastSeen => 250 } }
+    ),
+    'or with 2 fields'
+);
+is( remaining($ids), 'c', 'or: session "c" remains' );
+
+# deleteIfLowerThan with "and"
+$ids = reset_sessions(
+    a => { _utime => 100, _lastSeen => 100 },
+    b => { _utime => 100, _lastSeen => 300 },
+    c => { _utime => 300, _lastSeen => 100 },
+);
+@res = $class->deleteIfLowerThan( $args,
+    { and => { _utime => 250, _lastSeen => 250 } } );
+is_deeply( \@res, [ 1, 1 ], 'and: 1 session deleted' );
+is( remaining($ids), 'b,c', 'and: sessions "b" and "c" remain' );
+
+# deleteIfLowerThan with "not"
+$ids = reset_sessions(
+    sso     => { _utime => 100, _session_kind => 'SSO' },
+    persist => { _utime => 100, _session_kind => 'Persistent' },
+    nokind  => { _utime => 100 },
+    recent  => { _utime => 300, _session_kind => 'SSO' },
+);
+$rule =
+  { or => { _utime => 250 }, not => { _session_kind => 'Persistent' } };
+@res = $class->deleteIfLowerThan( $args, $rule );
+is_deeply( \@res, [ 1, 2 ], 'not: 2 sessions deleted' );
+is( remaining($ids), 'persist,recent',
+    'not: session without _session_kind deleted' );
 
 done_testing();
 

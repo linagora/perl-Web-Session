@@ -98,10 +98,14 @@ sub deleteIfLowerThan {
     }
     return wantarray ? ( 0, 0 ) : 0 unless ($query);
     if ( $rule->{not} and keys %{ $rule->{not} } ) {
-        $query = "($query) AND "
-          . join( ' AND ',
-            map { qq{a_session->>"\$.$_" <> '$rule->{not}->{$_}'} }
-              keys %{ $rule->{not} } );
+        $query = "($query) AND " . join(
+            ' AND ',
+            map {
+                my $f = qq{a_session->>"\$.$_"};
+                "($f IS NULL OR $f <> '$rule->{not}->{$_}')"
+              }
+              keys %{ $rule->{not} }
+        );
     }
     my $table_name = $args->{TableName}
       || $Apache::Session::Store::DBI::TableName;

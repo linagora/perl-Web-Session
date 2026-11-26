@@ -13,8 +13,6 @@ run_tests(
     ],
     corrupt => '"x"=>"_json://{bad"',
     todo    => {
-        deleteNot      => 'sessions without the "not" field are never deleted',
-        deleteAndNot   => 'sessions without the "not" field are never deleted',
         deleteNotQuote => '"not" values are not escaped',
     },
 );
