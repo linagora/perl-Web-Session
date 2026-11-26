@@ -2,7 +2,7 @@
 
 ## Version
 
-Update version in `lib/Apache/Session/Browseable.pm`
+Update version in `lib/Web/Session.pm`
 
 ## Changes
 
@@ -10,4 +10,4 @@ Update changelog in `Changes` file
 
 ## Github release
 
-Create a new release on [https://github.com/LemonLDAPNG/Apache-Session-Browseable/releases](https://github.com/LemonLDAPNG/Apache-Session-Browseable/releases)
+Create a new release on [https://github.com/linagora/perl-Web-Session/releases](https://github.com/linagora/perl-Web-Session/releases)

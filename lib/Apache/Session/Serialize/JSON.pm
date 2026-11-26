@@ -106,7 +106,7 @@ therefore vary slightly between backends.
 
 File and Redis are not affected: Redis stores Latin-1 but reads it with
 C<unserializeLatin1()>, which skips the UTF-8 decode, and
-L<Apache::Session::Browseable::Store::File> always writes UTF-8. Files written
+L<Web::Session::Store::File> always writes UTF-8. Files written
 by an older version keep their ambiguity: Latin-1 bytes that also form a valid
 UTF-8 sequence can't be told apart from UTF-8 ones.
 

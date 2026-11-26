@@ -2,7 +2,7 @@ package SQLBackendTests;
 
 # Common tests for SQL backends, run only if <env>_DSN is set (credentials
 # are read from <env>_USER and <env>_PASSWORD). Parameters:
-#  - class:   Apache::Session::Browseable class to test
+#  - class:   Web::Session class to test
 #  - driver:  DBD driver name (Pg, mysql, MariaDB); if not set, it
 #             is read from <env>_DSN
 #  - env:     environment variables prefix (PG, MYSQL, MARIADB, ORACLE)
@@ -762,7 +762,7 @@ sub run_tests {
 
     # get_key_from_all_sessions reads sessions by batches
     {
-        local $Apache::Session::Browseable::_common::BatchSize = 2;
+        local $Web::Session::_common::BatchSize = 2;
         my $queries = 0;
         my $cdbh    = $class->_classDbh($args);
         local $cdbh->{Callbacks} =

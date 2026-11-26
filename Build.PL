@@ -4,7 +4,7 @@ use Module::Build;
 
 Module::Build->new(
     dist_author => 'LLNG Team <https://lemonldap-ng.org>',
-    module_name => 'Apache::Session::Browseable',
+    module_name => 'Web::Session',
     license     => 'perl',
     requires    => {
         'Apache::Session' => 0,
@@ -25,12 +25,12 @@ Module::Build->new(
     },
     test_recommends    => { 'LWP::Protocol::PSGI' => 0, },
     dist_version       => '1.4.0',
-    autosplit          => [qw(lib/Apache/Session/Browseable/_common.pm)],
+    autosplit          => [qw(lib/Web/Session/_common.pm)],
     configure_requires => { 'Module::Build' => 0, },
     meta_merge         => {
         resources => {
             repository =>
-              'https://github.com/LemonLDAPNG/Apache-Session-Browseable'
+              'https://github.com/linagora/perl-Web-Session'
         }
     },
 )->create_build_script;

@@ -111,6 +111,6 @@ jobs:
           MARIADB_USER: root
           MARIADB_PASSWORD: root
         run: |
-          MARIADB_DSN='dbi:MariaDB:database=sessions;host=127.0.0.1;port=3308' prove -b t/Apache-Session-Browseable-MariaDBJSON.t
-          MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3308' prove -b t/Apache-Session-Browseable-MariaDBJSON.t
-          MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3307' prove -b t/Apache-Session-Browseable-MariaDBJSON.t
+          MARIADB_DSN='dbi:MariaDB:database=sessions;host=127.0.0.1;port=3308' prove -b t/Web-Session-MariaDBJSON.t
+          MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3308' prove -b t/Web-Session-MariaDBJSON.t
+          MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3307' prove -b t/Web-Session-MariaDBJSON.t

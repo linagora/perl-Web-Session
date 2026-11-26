@@ -1,4 +1,4 @@
-# SQL correctness tests of Apache::Session::Browseable::DBI using SQLite
+# SQL correctness tests of Web::Session::DBI using SQLite
 
 use strict;
 use warnings;
@@ -20,7 +20,7 @@ $dbh->do( 'CREATE TABLE sessions(id char(64) not null primary key,'
       . 'a_session text,_utime text,_lastSeen text,_session_kind text,uid text)'
 );
 
-my $class = 'Apache::Session::Browseable::SQLite';
+my $class = 'Web::Session::SQLite';
 use_ok($class);
 
 my $args = {
@@ -114,8 +114,8 @@ is_deeply(
     'Fields list not modified (field containing a quote)'
 );
 
-require Apache::Session::Browseable::Store::SQLite;
-my $store = Apache::Session::Browseable::Store::SQLite->new;
+require Web::Session::Store::SQLite;
+my $store = Web::Session::Store::SQLite->new;
 quiet {
     eval {
         $store->insert(
@@ -334,7 +334,7 @@ ok( $class->deleteIfLowerThan( $args, { or => { _utime => '-1' } } ),
 # get_key_from_all_sessions reads sessions by batches
 {
     no warnings 'once';
-    local $Apache::Session::Browseable::_common::BatchSize = 2;
+    local $Web::Session::_common::BatchSize = 2;
     my $queries = 0;
     my $cdbh    = $class->_classDbh($args);
     local $cdbh->{Callbacks} =
@@ -366,7 +366,7 @@ ok( $class->deleteIfLowerThan( $args, { or => { _utime => '-1' } } ),
     no warnings 'once';
     $ids = reset_sessions( map { ( "s$_" => { uid => "u$_" } ) } 1 .. 3 );
     foreach my $size ( 0, -1, 'abc', undef, 1_000_001, '9' x 26 ) {
-        local $Apache::Session::Browseable::_common::BatchSize = $size;
+        local $Web::Session::_common::BatchSize = $size;
         my $name = defined $size ? "'$size'" : 'undef';
         $res = eval {
             local $SIG{ALRM} = sub { die "timeout\n" };
@@ -386,7 +386,7 @@ ok( $class->deleteIfLowerThan( $args, { or => { _utime => '-1' } } ),
 {
 
     package My::SQLiteSubclass;
-    our @ISA = ('Apache::Session::Browseable::SQLite');
+    our @ISA = ('Web::Session::SQLite');
 }
 $res = eval { My::SQLiteSubclass->get_key_from_all_sessions($args) };
 is( $@, '', 'Subclass without populate: no error' );

@@ -1,4 +1,4 @@
-Revision history for Perl extension Apache::Session::Browseable.
+Revision history for Perl extension Web::Session (formerly Apache::Session::Browseable).
 
 1.4.0
     - LDAP: accept TLS parameters in ldaps:// URLs

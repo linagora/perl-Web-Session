@@ -1,6 +1,6 @@
-# Apache::Session::Browseable
+# Web::Session
 
-[![Build Status](https://github.com/LemonLDAPNG/Apache-Session-Browseable/actions/workflows/ci.yml/badge.svg)](https://github.com/LemonLDAPNG/Apache-Session-Browseable/actions/workflows/ci.yml)
+[![Build Status](https://github.com/linagora/perl-Web-Session/actions/workflows/ci.yml/badge.svg)](https://github.com/linagora/perl-Web-Session/actions/workflows/ci.yml)
 
 This module is an Apache::Session implementation allowing to define index to speed up searches.
 
@@ -16,4 +16,4 @@ perl Build.PL
 
 ## CPAN
 
-See http://search.cpan.org/dist/Apache-Session-Browseable/
+See http://search.cpan.org/dist/Web-Session/
