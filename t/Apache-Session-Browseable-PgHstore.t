@@ -13,8 +13,6 @@ run_tests(
     ],
     corrupt => '"x"=>"_json://{bad"',
     todo    => {
-        gkfasArray     => 'the query does not select the id column',
-        gkfasField     => 'the query does not select the id column',
         deleteAnd      => '"and" rules are built from the "or" hash',
         deleteNot      => 'sessions without the "not" field are never deleted',
         deleteAndNot   => '"and" rules are built from the "or" hash',
