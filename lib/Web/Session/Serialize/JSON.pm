@@ -2,18 +2,25 @@
 package Web::Session::Serialize::JSON;
 
 use strict;
-use JSON qw(to_json);
+use JSON;
 
 our $VERSION = '1.0.0';
 
 my $json     = JSON->new->allow_nonref;
 my $utf8Json = JSON->new->utf8->allow_nonref;
-my $latin1Json = JSON->new->latin1->allow_nonref;
+
+# Writers produce canonical JSON (keys sorted): Perl randomizes the order of
+# hash keys (per process and per hash), so the same data would otherwise be
+# serialized differently from one save to the next. SQL stores compare the
+# serialized data with the one they read to skip the write of an unchanged
+# session (see Web::Session::Store::DBI)
+my $canonicalJson = JSON->new->canonical->allow_nonref;
+my $latin1Json    = JSON->new->canonical->latin1->allow_nonref;
 
 sub serialize {
     my $session = shift;
 
-    $session->{serialized} = to_json( $session->{data}, { allow_nonref => 1 } );
+    $session->{serialized} = $canonicalJson->encode( $session->{data} );
 
     # JSON::PP doesn't flag its result as UTF-8 when data holds only Latin-1
     # characters: some DBD drivers would then store Latin-1 bytes
@@ -85,8 +92,13 @@ Web::Session::Serialize::JSON - Use JSON to zip up data
 =head1 DESCRIPTION
 
 This module fulfills the serialization interface of Apache::Session.
-It serializes the data in the session object by use of JSON C<to_json>
-and C<from_json>. The serialized data is UTF-8 text.
+It serializes the data in the session object by use of L<JSON>. The
+serialized data is UTF-8 text.
+
+The output is canonical: object keys are sorted, so the same data always gives
+the same string, whatever the order in which Perl stores the hash keys. SQL
+backends rely on it to skip the rewrite of an unchanged session (see
+L<Web::Session/"UNCHANGED SESSIONS ARE NOT REWRITTEN">).
 
 When reading, a string returned as bytes by the store (not flagged as UTF-8,
 for example a MySQL C<json> column) is first decoded as UTF-8 JSON; if it is
