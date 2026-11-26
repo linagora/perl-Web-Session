@@ -1,6 +1,27 @@
 Revision history for Perl extension Web::Session (formerly Apache::Session::Browseable).
 
 1.4.0
+    - Fork of Apache::Session::Browseable, renamed Web::Session
+      (https://github.com/linagora/perl-Web-Session)
+    - Postgres is now an alias of PgJSON, MySQL of MySQLJSON; new MariaDB
+      alias of MariaDBJSON
+    - Drop the Oracle, Informix, Sybase and PgHstore backends
+    - New MariaDBJSON backend
+    - PostgreSQL: optional connection pool (KeepConnections, MaxIdle,
+      IdleTimeout, MaxLifetime), one connection per tied session, a new
+      session written once
+    - DBI backends reuse their connection by default (noreuse to disable)
+    - searchLt() and searchGt() for SQL, Redis and LDAP backends
+    - PgJSON: optional GIN index (GinIndex)
+    - Quote table and column names; fix SQL injections through
+      deleteIfLowerThan() values and JSON field names
+    - deleteIfLowerThan(): fix "and" and "not" rules, invalid rules
+    - Faster full scans (batches, no eval per row), index documentation
+    - JSON serializer: decode UTF-8 bytes, Redis supports characters above
+      U+00FF
+    - Many Redis fixes (index cleanup, foreign keys, glob characters,
+      batched reads)
+    - LDAP: deleteIfLowerThan()
     - LDAP: accept TLS parameters in ldaps:// URLs
     - LDAP: mTLS client certificate, SASL EXTERNAL bind without bind DN
     - LDAP: per-server TLS settings in failover lists

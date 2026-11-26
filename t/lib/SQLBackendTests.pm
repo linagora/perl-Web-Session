@@ -18,6 +18,7 @@ package SQLBackendTests;
 #  - tableCase: 1 to also use the table with its name in upper case
 #               (PostgreSQL folds unquoted names to lower case)
 #  - gin:     1 to compare searchOn() results with and without GinIndex
+#  - args:    other arguments given to the backend (KeepConnections...)
 #  - todo:    known bugs of this backend: { test group => reason }. Tests of
 #             these groups are run as TODO tests and may die without
 #             breaking the rest of the suite
@@ -92,6 +93,7 @@ sub run_tests {
         TableName  => $table,
         Commit     => 1,
         ( $o{index} ? ( Index => $o{index} ) : () ),
+        %{ $o{args} || {} },
     };
     my %todo  = %{ $o{todo}  || {} };
     my @weird = @{ $o{weird} || [] };
@@ -306,8 +308,16 @@ sub run_tests {
             }
         );
         tie %s, $class, $rid, $rargs;
-        is( refaddr( $dbhOf->( \%s ) ),
-            refaddr($rdbh), 'reuse: handle reused after a failure' );
+
+        # KeepConnections closes a connection that met an error
+        if ( $args->{KeepConnections} ) {
+            ok( $dbhOf->( \%s )->{Active},
+                'pool: connection available after a failure' );
+        }
+        else {
+            is( refaddr( $dbhOf->( \%s ) ),
+                refaddr($rdbh), 'reuse: handle reused after a failure' );
+        }
         is( $s{uid}, 'dwho', 'reuse: session retrieved after a failure' );
         tied(%s)->delete;
         untie %s;

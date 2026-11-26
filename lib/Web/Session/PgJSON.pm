@@ -512,6 +512,66 @@ The database connection is kept open between sessions. Set
 C<noreuse =E<gt> 1> to open and close one for each session, see
 L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">.
 
+=head2 Connection pool (KeepConnections)
+
+With C<KeepConnections =E<gt> 1> (and C<Commit =E<gt> 1>), sessions use a pool
+of connections instead: each process keeps up to C<MaxIdle> idle connections
+per data source (C<DataSource> and C<UserName>), and lends each one to a
+single tied session at a time. So two sessions tied together (for example a
+Lemonldap::NG session and its persistent session) never share a connection
+nor a transaction. Options:
+
+=over
+
+=item KeepConnections
+
+Enables the pool. Ignored without C<Commit>, with C<noreuse> or with a
+C<Handle>.
+
+=item MaxIdle
+
+Idle connections kept per process and data source, 4 by default. C<0> closes
+each connection at untie.
+
+=item IdleTimeout
+
+Seconds: a connection idle for longer is closed instead of being lent
+(without a C<ping()>, which could wait for a TCP timeout on a connection
+dropped by a NAT or a load balancer), 120 by default. Adding
+C<keepalives_idle> to the DSN also helps detect dead connections.
+
+=item MaxLifetime
+
+Seconds: an older connection is closed when it is given back, 3600 by
+default.
+
+=back
+
+On these connections each statement is its own transaction (C<AutoCommit>
+on): no session is locked, and a tie writes once, so a transaction protected
+nothing. A new session is written once, with its data, when it is untied
+(instead of an empty C<INSERT> at C<tie> then an C<UPDATE>). A connection
+that met an error (for example a write on the former primary after a
+failover) is closed, never lent again. A connection given back recently is
+lent without a round trip; an older one is checked with C<ping()>.
+Connections are opened with C<AutoInactiveDestroy>: a child created by
+C<fork()> neither uses nor closes the connections of its parent.
+
+Example with Lemonldap::NG:
+
+  globalStorage        => 'Web::Session::PgJSON',
+  globalStorageOptions => {
+      DataSource      => 'dbi:Pg:dbname=sessions;host=db;keepalives_idle=30',
+      UserName        => 'lemonldap',
+      Password        => 'secret',
+      TableName       => 'sessions',
+      Commit          => 1,
+      KeepConnections => 1,
+  },
+
+L<Web::Session::Patroni> has its own connection management and doesn't use
+this pool.
+
 =head1 SEE ALSO
 
 L<http://lemonldap-ng.org>, L<Apache::Session::Postgres>

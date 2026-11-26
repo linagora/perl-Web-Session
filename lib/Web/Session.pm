@@ -97,6 +97,10 @@ search methods keeps two connections.
 
 =back
 
+PostgreSQL backends (PgJSON and its Postgres alias) also provide a pool of
+connections lent to one session at a time, with timeouts and error handling:
+see the C<KeepConnections> option in L<Web::Session::PgJSON>.
+
 =head1 AVAILABLE MODULES
 
 =head2 SQL databases
