@@ -57,6 +57,7 @@ t/Web-Session-MySQLJSON.t
 t/Web-Session-Patroni.t
 t/Web-Session-PgJSON-GinIndex.t
 t/Web-Session-PgJSON-KeepConnections.t
+t/Web-Session-PgJSON-purgeBatches.t
 t/Web-Session-PgJSON.t
 t/Web-Session-populate.t
 t/Web-Session-quoteColumn.t

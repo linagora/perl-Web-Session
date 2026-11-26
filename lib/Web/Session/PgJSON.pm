@@ -218,11 +218,33 @@ sub deleteIfLowerThan {
               keys %{ $rule->{not} }
         );
     }
+
+    # Delete by batches: a single DELETE on hundreds of thousands of sessions
+    # is one long transaction (WAL spike, locks held, replication lag). Each
+    # batch is its own statement (the class handle is AutoCommit). The WHERE
+    # expression is the same as before, so the expression indexes are still
+    # usable by the sub-select. Rows deleted by a concurrent purge are simply
+    # not counted.
     my $rows = eval {
         my $dbh = $class->_classDbh($args);
         my $table_name =
           Web::Session::_common->_tableName( $dbh, $args );
-        $dbh->do( "DELETE FROM $table_name WHERE $query", undef, @bind );
+        my $limit = Web::Session::_common->_batchSize;
+        my $total = 0;
+        while (1) {
+            my $n = $dbh->do(
+                "DELETE FROM $table_name WHERE id IN "
+                  . "(SELECT id FROM $table_name WHERE $query LIMIT $limit)",
+                undef, @bind
+            );
+            return undef unless defined $n;
+            $n = 0 if $n == -1;
+            $total += $n;
+
+            # A short batch means that nothing else matches
+            last if $n < $limit;
+        }
+        $total;
     };
     if ($@) {
         print STDERR "deleteIfLowerThan: $@\n";
@@ -491,6 +513,26 @@ the field) nor get_key_from_all_sessions(). Keep the C<uid1>, C<u1>, C<ls1>
 and C<ip1> btree indexes above alongside it; C<s1> is not needed anymore.
 PostgreSQL may still prefer a btree index on the searched field, or a full
 scan for a frequent value like C<_session_kind = 'SSO'>.
+
+=head2 deleteIfLowerThan()
+
+Sessions are deleted by batches, each batch being its own statement
+(autocommit), to avoid one huge transaction when a purge removes hundreds of
+thousands of sessions (WAL spike, long locks, replication lag):
+
+  DELETE FROM sessions WHERE id IN
+    (SELECT id FROM sessions WHERE <rule> LIMIT n)
+
+until a batch deletes less than C<n> rows. The C<WHERE> expression is the same
+as for a single statement, so the indexes described above are still used by the
+sub-select. C<n> is C<$Web::Session::_common::BatchSize> (1000 by default,
+accepted values: 1 to 1000000), the same variable that sets the size of the
+batches of get_key_from_all_sessions().
+
+The return value is unchanged: C<(1, $deleted)> in list context, C<1> in
+scalar context. If a batch fails, the error is printed on STDERR and C<(0, 0)>
+is returned; batches already executed stay committed. This also applies to
+L<Web::Session::Postgres> aliases and L<Web::Session::Patroni>.
 
 =head2 searchLt() and searchGt()
 

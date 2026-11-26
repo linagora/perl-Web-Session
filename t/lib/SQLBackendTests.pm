@@ -794,6 +794,28 @@ sub run_tests {
         $reset->();
     }
 
+    # A purge larger than the batch size deletes everything
+    $group->(
+        deleteBatches => sub {
+            local $Web::Session::_common::BatchSize = 2;
+            foreach my $count ( 4, 5, 7 ) {
+                $reset->();
+                $newSession->( uid => "old$_", _utime => 100 + $_ )
+                  foreach ( 1 .. $count );
+                $newSession->( uid => 'recent', _utime => 100_000 );
+                my @r = $class->deleteIfLowerThan( $args,
+                    { or => { _utime => 200 } } );
+                is_deeply( \@r, [ 1, $count ],
+                    "deleteIfLowerThan: $count sessions by batches of 2" );
+                is(
+                    scalar( keys %{ $class->get_key_from_all_sessions($args) } ),
+                    1, 'deleteIfLowerThan by batches: only 1 session left'
+                );
+            }
+            $reset->();
+        }
+    );
+
     # deleteIfLowerThan
     $group->(
         delete => sub {
