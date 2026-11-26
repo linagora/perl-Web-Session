@@ -598,18 +598,19 @@ L</GIN INDEX>.
 Sessions are updated often (C<_utime>, C<_lastSeen>). In PostgreSQL, each
 C<UPDATE> creates a new version of the row and leaves the old one as a dead
 tuple until (auto)vacuum removes it. Purge also leaves dead tuples. Moreover
-PostgreSQL decides if an update can be a HOT (heap-only tuple) update, which
-doesn't touch the indexes, by looking at the B<columns> used by indexes, not
-at the value of the indexed expressions. Since every update writes a new
-C<a_session> and the expression indexes above all use this column, updates are
-normally not HOT: each one adds an entry to each index (including the primary
-key). This is also why the number of indexes directly drives the update cost
-(see the measures in L</GIN INDEX>): keep only the indexes you really use.
+PostgreSQL can make an update HOT (heap-only tuple, the indexes are not
+touched) only if the B<columns> used by the indexes keep the same stored
+value: it compares the column values, it doesn't evaluate the indexed
+expressions. The expression indexes above all use C<a_session>, so an update
+that changes the session (C<_utime>, C<_lastSeen>...) is never HOT: it adds an
+entry to each index, including the primary key. This is also why the number
+of indexes directly drives the update cost (see the measures in
+L</GIN INDEX>): keep only the indexes you really use.
 
 For the same reason, lowering C<fillfactor> (which leaves free room in pages
 for HOT updates) brings little here as soon as the table has expression
-indexes on C<a_session>. It may help for a table that has only its primary
-key.
+indexes on C<a_session>: only updates that write the session back unchanged
+can be HOT. It may help for a table that has only its primary key.
 
 A busy sessions table is better vacuumed more often than the default
 (20% of dead rows) allows. Per-table settings can be used without changing the
