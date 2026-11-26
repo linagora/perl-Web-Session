@@ -32,7 +32,12 @@ sub _reusedHandle {
     my ( $self, $args, $datasource, $username, $password, $attr ) = @_;
     return undef
       if ( defined $self->{dbh} or $args->{noreuse} or exists $args->{Handle} );
-    my $dbh = DBI->connect_cached( $datasource, $username, $password, $attr )
+
+    # Fork safe, as the handles of the class methods (see _forkSafeAttr() in
+    # _common.pm): a child forked after the parent tied a session must not
+    # reuse the parent's handle, nor close its connection
+    my $dbh = DBI->connect_cached( $datasource, $username, $password,
+        Web::Session::_common->_forkSafeAttr($attr) )
       || die $DBI::errstr;
     $self->{reuse_rollback} =
       bless \$dbh, 'Web::Session::Store::DBI::Rollback'
