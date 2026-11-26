@@ -64,8 +64,7 @@ sub _query {
 
     my $res = $sth->fetchall_hashref('id') or return {};
     unless (@fields) {
-        my $self = eval "&${class}::populate();";
-        my $sub  = $self->{unserialize};
+        my $sub = Apache::Session::Browseable::_common::_unserializer($class);
         foreach my $s ( keys %$res ) {
             eval {
                 my $tmp = &$sub( { serialized => $res->{$s}->{a_session} } );
@@ -88,15 +87,13 @@ sub deleteIfLowerThan {
     my ( $query, @bind );
     if ( $rule->{or} ) {
         $query = join ' OR ', map {
-            my $f = $class->_sqlField($_);
-            "cast($f as bigint) < $rule->{or}->{$_}"
+            $class->_buildLowerThanExpression( $_, $rule->{or}->{$_} )
           }
           keys %{ $rule->{or} };
     }
     elsif ( $rule->{and} ) {
         $query = join ' AND ', map {
-            my $f = $class->_sqlField($_);
-            "cast($f as bigint) < $rule->{and}->{$_}"
+            $class->_buildLowerThanExpression( $_, $rule->{and}->{$_} )
           }
           keys %{ $rule->{and} };
     }
@@ -150,32 +147,33 @@ sub get_key_from_all_sessions {
         $sth->execute;
         return $sth->fetchall_hashref('id');
     }
-    $sth = $dbh->prepare_cached("SELECT id,a_session from $table_name");
-    $sth->execute;
     my %res;
-    while ( my @row = $sth->fetchrow_array ) {
-        no strict 'refs';
-        my $self = eval "&${class}::populate();";
-        eval {
-            my $sub = $self->{unserialize};
-            my $tmp = &$sub( { serialized => $row[1] } );
-            if ( ref($data) eq 'CODE' ) {
-                $tmp = &$data( $tmp, $row[0] );
-                $res{ $row[0] } = $tmp if ( defined($tmp) );
+    my $sub = Apache::Session::Browseable::_common::_unserializer($class);
+    Apache::Session::Browseable::_common->_forEachSession(
+        $dbh,
+        $table_name,
+        sub {
+            my @row = @_;
+            eval {
+                my $tmp = &$sub( { serialized => $row[1] } );
+                if ( ref($data) eq 'CODE' ) {
+                    $tmp = &$data( $tmp, $row[0] );
+                    $res{ $row[0] } = $tmp if ( defined($tmp) );
+                }
+                elsif ($data) {
+                    $data = [$data] unless ( ref($data) );
+                    $res{ $row[0] }->{$_} = $tmp->{$_} foreach (@$data);
+                }
+                else {
+                    $res{ $row[0] } = $tmp;
+                }
+            };
+            if ($@) {
+                print STDERR "Error in session $row[0]: $@\n";
+                delete $res{ $row[0] };
             }
-            elsif ($data) {
-                $data = [$data] unless ( ref($data) );
-                $res{ $row[0] }->{$_} = $tmp->{$_} foreach (@$data);
-            }
-            else {
-                $res{ $row[0] } = $tmp;
-            }
-        };
-        if ($@) {
-            print STDERR "Error in session $row[0]: $@\n";
-            delete $res{ $row[0] };
         }
-    }
+    );
     return \%res;
 }
 
@@ -198,6 +196,12 @@ sub _sqlAlias {
     my ( $class, $field ) = @_;
     $field =~ s/"/""/g;
     return qq{"$field"};
+}
+
+# Must match the documented expression indexes (_utime, _lastSeen)
+sub _buildLowerThanExpression {
+    my ( $class, $field, $value ) = @_;
+    return 'cast(' . $class->_sqlField($field) . " as bigint) < $value";
 }
 
 sub _classDbh {
@@ -228,15 +232,36 @@ Create table:
 
   CREATE UNLOGGED TABLE sessions (
       id varchar(64) not null primary key,
-      a_session jsonb,
+      a_session jsonb
   );
 
 Optionally, add indexes on some fields. Example for Lemonldap::NG:
 
-  CREATE INDEX uid1 ON sessions USING BTREE ( (a_session ->> '_whatToTrace') );
+  CREATE INDEX uid1 ON sessions USING BTREE
+    ( (a_session ->> '_whatToTrace') text_pattern_ops );
   CREATE INDEX  s1  ON sessions ( (a_session ->> '_session_kind') );
   CREATE INDEX  u1  ON sessions ( ( cast(a_session ->> '_utime' AS bigint) ) );
-  CREATE INDEX ip1  ON sessions USING BTREE ( (a_session ->> 'ipAddr') );
+  CREATE INDEX ls1  ON sessions
+    ( ( cast(a_session ->> '_lastSeen' AS bigint) ) );
+  CREATE INDEX ip1  ON sessions USING BTREE
+    ( (a_session ->> 'ipAddr') text_pattern_ops );
+
+searchOnExpr() uses C<LIKE 'prefix%'> queries: unless the database uses the
+"C" collation, PostgreSQL can't use a plain btree index for them. The
+C<text_pattern_ops> operator class lets the same index serve both C<=> and
+prefix C<LIKE> searches. Note that a search starting with a C<*> wildcard can
+never use a btree index.
+
+deleteIfLowerThan() can use C<u1> and C<ls1> indexes only if they are declared
+exactly as above. C<ls1> is needed when Lemonldap::NG "timeoutActivity" is
+used: sessions purge then deletes sessions whose C<_utime> B<or> C<_lastSeen>
+is too old, and an C<OR> with a non indexed side forces a full table scan.
+
+Avoid a global C<GIN (a_session jsonb_path_ops)> index: queries of this module
+don't use the C<@E<gt>> operator, so it is never used. Measured on 300,000
+realistic Lemonldap::NG sessions, it took 167 MB (versus 15 MB for the C<uid1>,
+C<s1>, C<u1> and C<ip1> btree indexes above) and made updates about 3 times
+slower.
 
 Use it like L<Apache::Session::Browseable::Postgres> except that you don't
 need to declare indexes

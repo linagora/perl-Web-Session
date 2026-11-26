@@ -124,13 +124,13 @@ my %backends = (
         driver => 'Pg',
         table  => '"sessions"',
         q      => sub { $_[0] =~ /"/ ? $_[0] : '"' . lc( $_[0] ) . '"' },
-        cmp    => sub { "cast($_[0] as integer) $_[1] $_[2]" },
+        cmp    => sub { "cast($_[0] as bigint) $_[1] $_[2]" },
     },
     MySQL => {
         driver => 'mysql',
         table  => '`sessions`',
         q      => sub { $_[0] =~ /"/ ? $_[0] : "`$_[0]`" },
-        cmp    => sub { "CAST($_[0] AS SIGNED INTEGER) $_[1] $_[2]" },
+        cmp    => sub { "$_[0] $_[1] $_[2]" },
     },
 );
 
@@ -240,7 +240,12 @@ foreach my $backend ( sort keys %backends ) {
         );
         is_deeply(
             \@FakeDbh::log,
-            [ ["DELETE FROM $t WHERE ($ut) AND $sk <> 'Persistent'"] ],
+            [
+                [
+                    "DELETE FROM $t WHERE ($ut) AND ($sk IS NULL OR $sk <> ?)",
+                    'Persistent'
+                ]
+            ],
             "$backend: deleteIfLowerThan with \"not\""
         );
 
