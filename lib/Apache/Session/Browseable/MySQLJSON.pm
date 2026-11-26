@@ -2,6 +2,7 @@ package Apache::Session::Browseable::MySQLJSON;
 
 use strict;
 
+use Encode;
 use Apache::Session;
 use Apache::Session::Lock::Null;
 use Apache::Session::Browseable::Store::MySQL;
@@ -42,7 +43,7 @@ sub searchOn {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
     my $dbh   = $class->_classDbh($args);
     my $query = {
-        query  => $class->_sqlField( $dbh, $selectField ) . ' =?',
+        query  => $class->_sqlField( $dbh, $selectField, $args ) . ' =?',
         values => [$value]
     };
     return $class->_query( $args, $query, @fields );
@@ -53,7 +54,7 @@ sub searchOnExpr {
     my $dbh = $class->_classDbh($args);
     $value =~ s/\*/%/g;
     my $query = {
-        query  => $class->_sqlField( $dbh, $selectField ) . ' like ?',
+        query  => $class->_sqlField( $dbh, $selectField, $args ) . ' like ?',
         values => [$value]
     };
     return $class->_query( $args, $query, @fields );
@@ -71,11 +72,11 @@ sub _query {
     my $table_name = $class->_tableName( $dbh, $args );
 
     my $sth;
-    my ( $select, $aliases ) = $class->_sqlSelect( $dbh, @fields );
+    my ( $select, $aliases ) = $class->_sqlSelect( $dbh, \@fields, $args );
     my $fields = @fields ? join( ',', 'id', @$select ) : 'id,a_session';
     $sth =
       $dbh->prepare("SELECT $fields from $table_name where $query->{query}");
-    $sth->execute( @{ $query->{values} } );
+    $sth->execute( $class->_utf8( @{ $query->{values} } ) );
 
     my $res = $sth->fetchall_hashref('id') or return {};
     if (@fields) {
@@ -110,13 +111,13 @@ sub deleteIfLowerThan {
     }
     if ( $rule->{or} ) {
         $query = join ' OR ', map {
-            $class->_buildLowerThanExpression( $_, $rule->{or}->{$_}, $dbh )
+            $class->_buildLowerThanExpression( $_, $rule->{or}->{$_}, $dbh, $args )
           }
           keys %{ $rule->{or} };
     }
     elsif ( $rule->{and} ) {
         $query = join ' AND ', map {
-            $class->_buildLowerThanExpression( $_, $rule->{and}->{$_}, $dbh )
+            $class->_buildLowerThanExpression( $_, $rule->{and}->{$_}, $dbh, $args )
           }
           keys %{ $rule->{and} };
     }
@@ -126,7 +127,7 @@ sub deleteIfLowerThan {
             ' AND ',
             map {
                 push @bind, $rule->{not}->{$_};
-                my $f = $class->_sqlField( $dbh, $_ );
+                my $f = $class->_sqlField( $dbh, $_, $args );
                 "($f IS NULL OR $f <> ?)"
               }
               keys %{ $rule->{not} }
@@ -134,7 +135,8 @@ sub deleteIfLowerThan {
     }
     my $table_name = $class->_tableName( $dbh, $args );
     my $rows =
-      eval { $dbh->do( "DELETE FROM $table_name WHERE $query", undef, @bind ) };
+      eval { $dbh->do( "DELETE FROM $table_name WHERE $query", undef,
+            $class->_utf8(@bind) ) };
     if ($@) {
         print STDERR "deleteIfLowerThan: $@\n";
         return wantarray ? ( 0, 0 ) : 0;
@@ -160,7 +162,7 @@ sub get_key_from_all_sessions {
     # Special case if all wanted fields are indexed
     if ( $data and ref($data) ne 'CODE' ) {
         $data = [$data] unless ( ref($data) );
-        my ( $select, $aliases ) = $class->_sqlSelect( $dbh, @$data );
+        my ( $select, $aliases ) = $class->_sqlSelect( $dbh, $data, $args );
         my $fields = join ',', 'id', @$select;
         $sth = $dbh->prepare("SELECT $fields from $table_name");
         $sth->execute;
@@ -198,9 +200,27 @@ sub get_key_from_all_sessions {
     return \%res;
 }
 
-# Build SQL expression to get a field from a_session. Field name is used as
-# JSON path member, quoted if needed
+# Same arguments as in DBI.pm plus the database handle (needed to quote the
+# JSON path) and connection arguments. The handle is optional: without one,
+# _sqlPath() quotes the path. The expression must match the documented
+# generated columns
+sub _buildLowerThanExpression {
+    my ( $class, $field, $value, $dbh, $args ) = @_;
+    my $f = $class->_sqlField( $dbh, $field, $args );
+    return "cast($f as UNSIGNED) < $value";
+}
+
+# Build SQL expression to get a field from a_session ($args: connection
+# arguments, for subclasses)
 sub _sqlField {
+    my ( $class, $dbh, $field, $args ) = @_;
+    return 'a_session->>' . $class->_sqlPath( $dbh, $field );
+}
+
+# Build the SQL literal of the JSON path of a field. Field name is used as
+# JSON path member, quoted if needed. The database handle is only used to
+# quote the path: it may be missing on the DBI deleteIfLowerThan() path
+sub _sqlPath {
     my ( $class, $dbh, $field ) = @_;
     my $path;
     if ( $field =~ /^[A-Za-z_][A-Za-z0-9_]*\z/ ) {
@@ -210,19 +230,47 @@ sub _sqlField {
         ( my $f = $field ) =~ s/(["\\])/\\$1/g;
         $path = qq{\$."$f"};
     }
-    return 'a_session->>' . $dbh->quote($path);
+    ($path) = $class->_utf8($path);
+    return $dbh->quote($path) if ( defined $dbh );
+
+    # No database handle: quote the path here (MySQL escapes backslashes)
+    $path =~ s/\\/\\\\/g;
+    $path =~ s/'/''/g;
+    return "'$path'";
+}
+
+# DBD::mysql sends strings as stored by Perl: store them in UTF-8 so that
+# characters U+0080 to U+00FF are not sent in Latin-1. A non flagged string
+# containing bytes >= 0x80 may be UTF-8 or Latin-1 encoded: try UTF-8 first
+# (strictly), and fall back to Latin-1 (utf8::upgrade) only if it is not
+# valid UTF-8
+sub _utf8 {
+    my $class = shift;
+    return map {
+        my $s = $_;
+        if (   defined($s)
+            and !utf8::is_utf8($s)
+            and $s =~ /[\x80-\xff]/ )
+        {
+            my $decoded =
+              eval { Encode::decode( 'UTF-8', $s, Encode::FB_CROAK ) };
+            if ( defined($decoded) ) { $s = $decoded }
+            else                     { utf8::upgrade($s) }
+        }
+        $s
+    } @_;
 }
 
 # Build the SELECT list for the given fields. Column aliases are generated
 # (a field name may contain "?", which DBD::mysql takes for a placeholder even
 # inside backquotes): returns the list and an alias => field name hash
 sub _sqlSelect {
-    my ( $class, $dbh, @fields ) = @_;
+    my ( $class, $dbh, $fields, $args ) = @_;
     my ( @select, %aliases );
-    foreach my $field (@fields) {
+    foreach my $field (@$fields) {
         my $alias = 'f' . scalar(@select);
         $aliases{$alias} = $field;
-        push @select, $class->_sqlField( $dbh, $field ) . " AS `$alias`";
+        push @select, $class->_sqlField( $dbh, $field, $args ) . " AS `$alias`";
     }
     return ( \@select, \%aliases );
 }
@@ -239,17 +287,6 @@ sub _renameAliases {
     }
 }
 
-# Same arguments as in DBI.pm. Must match the documented generated columns:
-# simple field names use the same JSON path syntax
-sub _buildLowerThanExpression {
-    my ( $class, $field, $value, $dbh ) = @_;
-    my $f =
-      $field =~ /^[A-Za-z_][A-Za-z0-9_]*\z/
-      ? qq{a_session->>"\$.$field"}
-      : $class->_sqlField( $dbh, $field );
-    return "cast($f as UNSIGNED) < $value";
-}
-
 sub _classDbh {
     my ( $class, $args ) = @_;
 
@@ -260,7 +297,9 @@ sub _classDbh {
       DBI->connect_cached( $datasource, $username, $password,
         { RaiseError => 1, AutoCommit => 1 } )
       || die $DBI::errstr;
-    $dbh->{mysql_enable_utf8} = 1;
+
+    # DBD::MariaDB always uses UTF-8
+    $dbh->{mysql_enable_utf8} = 1 if ( $dbh->{Driver}->{Name} eq 'mysql' );
     return $dbh;
 }
 
@@ -269,7 +308,7 @@ __END__
 
 =head1 NAME
 
-Apache::Session::Browseable::MySQL - Add index and search methods to
+Apache::Session::Browseable::MySQLJSON - Add index and search methods to
 Apache::Session::MySQL
 
 =head1 SYNOPSIS
@@ -365,6 +404,10 @@ Don't set C<Index>: any field can be searched from C<a_session> and the store
 would try to write indexed fields into columns of the same name, which don't
 exist in a JSON table. C<populate()> warns when C<Index> is set.
 
+Field names and searched values are strings: a non flagged string containing
+bytes C<0x80> or more is first tried as UTF-8 and read as Latin-1 if it is
+not valid UTF-8, so both encodings find non-ASCII values.
+
 Use it like L<Apache::Session::Browseable::MySQL>
 
 =head1 DESCRIPTION
@@ -375,12 +418,13 @@ sessions and add the capability to index some fields to make research faster.
 Apache::Session::Browseable::MySQLJSON implements it for MySQL databases
 using "json" type to be able to browse sessions.
 
-THIS MODULE ISN'T USABLE WITH MARIADB FOR NOW.
+This module isn't usable with MariaDB: use
+L<Apache::Session::Browseable::MariaDBJSON> instead.
 
 =head1 SEE ALSO
 
 L<Apache::Session>, L<Apache::Session::Browseable::MySQL>,
-L<http://lemonldap-ng.org>
+L<Apache::Session::Browseable::MariaDBJSON>, L<http://lemonldap-ng.org>
 
 =head1 COPYRIGHT AND LICENSE
 
