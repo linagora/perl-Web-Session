@@ -120,14 +120,23 @@ sub insert {
     return $self->_try( 'insert', @_ );
 }
 
+# update() and materialize() keep the serialized data that the database
+# holds, and update() doesn't rewrite an unchanged session, as the stores
+# inheriting from Web::Session::Store::DBI (see "Unchanged sessions are not
+# rewritten" there)
 sub update {
     my $self = shift;
-    return $self->_try( 'update', @_ );
+    return if ( Web::Session::Store::DBI::_unchanged( $self, $_[0] ) );
+    my $res = $self->_try( 'update', @_ );
+    Web::Session::Store::DBI::_remember( $self, $_[0] );
+    return $res;
 }
 
 sub materialize {
     my $self = shift;
-    return $self->_try( 'materialize', @_ );
+    my $res  = $self->_try( 'materialize', @_ );
+    Web::Session::Store::DBI::_remember( $self, $_[0] );
+    return $res;
 }
 
 sub remove {

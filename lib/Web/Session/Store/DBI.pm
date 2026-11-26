@@ -124,6 +124,11 @@ sub update {
     my $self    = shift;
     my $session = shift;
 
+    # Indexed columns are computed from the session data only: same data,
+    # same columns (unless Index lists a column added since the row was
+    # written: see RewriteUnchanged)
+    return if ( _unchanged( $self, $session ) );
+
     $self->connection($session);
 
     local $self->{dbh}->{RaiseError} = 1;
@@ -154,6 +159,88 @@ sub update {
     $self->{update_sth}->execute;
 
     $self->{update_sth}->finish;
+    _remember( $self, $session );
+}
+
+# Unchanged sessions are not rewritten
+#
+# Apache::Session saves a session at untie as soon as a key was stored, even
+# with the value it already had (Lemonldap::NG does that). An UPDATE that
+# writes the same data is not free: PostgreSQL writes a new row version (and
+# its WAL) that must be cleaned up later, plus a new entry in every index when
+# the stored value of a_session changes (the indexes are expressions on it, so
+# the update can't be HOT), for example when the keys of a json column come
+# in another order; other databases lock and log the row. So the store keeps the serialized data it read (or
+# last updated) and update() returns without writing when the new one is the
+# same. insert() is unchanged: it doesn't keep what it wrote, so the first
+# update() after it always writes.
+#
+# The functions below take the store as first argument, not as invocant:
+# Web::Session::Store::MariaDBJSON and Web::Session::Store::Patroni don't
+# inherit from this class and call them too.
+
+sub materialize {
+    my ( $self, $session ) = @_;
+
+    # Apache::Session::Store::DBI's one, as before this override (it comes
+    # first in the method resolution of the stores inheriting from this class)
+    $self->SUPER::materialize($session);
+    _remember( $self, $session );
+}
+
+# Keep the serialized data that the database holds (after a read or an update)
+sub _remember {
+    my ( $self, $session ) = @_;
+    $self->{stored_serialized} = $session->{serialized};
+}
+
+# Whether the serialized data to write ($session->{serialized}) is the one the
+# database already holds
+sub _unchanged {
+    my ( $self, $session ) = @_;
+    my $old = $self->{stored_serialized};
+    my $new = $session->{serialized};
+    return 0
+      if ( !defined $old
+        or !defined $new
+        or $session->{args}->{RewriteUnchanged} );
+
+    # Same bytes. Strings are compared as the bytes exchanged with the
+    # database: the serializer produces characters (UTF-8 flag on), which DBD
+    # drivers send UTF-8 encoded, but a driver may return the stored value as
+    # undecoded bytes (MySQL json columns, a handle without the utf8 option).
+    # A plain "eq" would compare characters: it would wrongly find a Latin-1
+    # byte equal to the same character sent UTF-8 encoded, and wrongly find
+    # UTF-8 bytes different from the same characters
+    return 1 if ( _bytes($old) eq _bytes($new) );
+
+    # Same data. Columns of type jsonb (PostgreSQL) or json (MySQL) don't
+    # return the text written but a normalized one (keys sorted by length,
+    # spaces added), and sessions written by older versions have their keys in
+    # random order: the bytes never match. The data read is then serialized
+    # again, the way the session read it, and compared. When it matches,
+    # readers already get the data that would be written, so the write
+    # changes nothing they see. Only JSON objects: a row in another format
+    # (Storable, written by old versions) is still rewritten as JSON.
+    # Costs one decode and one encode when the bytes differ (at each update
+    # with jsonb or MySQL json columns), much less than a write.
+    return 0 unless ( $old =~ /\A\s*\{/ );
+    local $@;
+    my $again = eval {
+        my $tmp = { serialized => $old };
+        $session->{unserialize}->($tmp);
+        $session->{serialize}->($tmp);
+        $tmp->{serialized};
+    };
+    return ( defined $again and _bytes($again) eq _bytes($new) ) ? 1 : 0;
+}
+
+# The bytes a DBD driver exchanges for string $s: UTF-8 encoded when it holds
+# characters (UTF-8 flag on), as is otherwise
+sub _bytes {
+    my $s = shift;
+    utf8::encode($s) if ( utf8::is_utf8($s) );
+    return $s;
 }
 
 # Table name and columns of indexed fields in SQL queries, see

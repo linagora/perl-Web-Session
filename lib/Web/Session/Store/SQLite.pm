@@ -98,6 +98,10 @@ sub materialize {
     $self->{materialize_sth}->finish;
 
     $session->{serialized} = $results->[0];
+
+    # Overrides Web::Session::Store::DBI's materialize(): keep what was read,
+    # see "Unchanged sessions are not rewritten" there
+    $self->_remember($session);
 }
 
 sub DESTROY {

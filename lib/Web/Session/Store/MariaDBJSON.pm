@@ -60,4 +60,22 @@ sub connection {
     $self->SUPER::connection($session);
 }
 
+# update() and materialize() of Apache::Session::Store::DBI, keeping the
+# serialized data that the database holds: update() doesn't rewrite an
+# unchanged session, as the stores inheriting from Web::Session::Store::DBI
+# (see "Unchanged sessions are not rewritten" there). Generated columns are
+# computed from a_session: unchanged too
+sub update {
+    my ( $self, $session ) = @_;
+    return if ( Web::Session::Store::DBI::_unchanged( $self, $session ) );
+    $self->SUPER::update($session);
+    Web::Session::Store::DBI::_remember( $self, $session );
+}
+
+sub materialize {
+    my ( $self, $session ) = @_;
+    $self->SUPER::materialize($session);
+    Web::Session::Store::DBI::_remember( $self, $session );
+}
+
 1;
