@@ -947,11 +947,10 @@ sub run_tests {
             ? 'class methods: connect_cached() not used'
             : 'class methods: connect_cached() used'
         );
-        is_deeply(
-            [ $class->deleteIfLowerThan( $args, { or => { _utime => 0 } } ) ],
-            [ 1, 0 ],
-            'class methods: deleteIfLowerThan'
-        );
+        # DBI returns "0E0" when no row is deleted
+        my @r = $class->deleteIfLowerThan( $args, { or => { _utime => 0 } } );
+        is_deeply( [ map { 0 + $_ } @r ],
+            [ 1, 0 ], 'class methods: deleteIfLowerThan' );
     }
 
     # deleteIfLowerThan
