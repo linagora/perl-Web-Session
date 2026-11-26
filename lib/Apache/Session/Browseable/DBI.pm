@@ -40,6 +40,49 @@ sub searchOnExpr {
     }
 }
 
+sub searchLt {
+    my $class = shift;
+    return $class->_searchCompare( '<', @_ );
+}
+
+sub searchGt {
+    my $class = shift;
+    return $class->_searchCompare( '>', @_ );
+}
+
+# Sessions without the field are skipped, also when it is compared in Perl
+# (fields not listed in Index). $value is checked, then inserted like
+# deleteIfLowerThan() thresholds: bound, it would take the type of the cast
+# (bigint in PostgreSQL) and decimal values would fail
+sub _searchCompare {
+    my ( $class, $op, $args, $selectField, $value, @fields ) = @_;
+    $value = $class->_checkSearchValue( $op, $value );
+    return {} unless ( defined $value );
+
+    unless ( $class->_fieldIsIndexed( $args, $selectField ) ) {
+        return $class->_searchByTest(
+            $args,
+            $selectField,
+            sub {
+                defined( $_[0] )
+                  and ( $op eq '<' ? $_[0] < $value : $_[0] > $value );
+            },
+            @fields
+        );
+    }
+    return $class->_searchQuery(
+        $op,
+        sub {
+            my $query =
+              $class->_buildCompareExpression(
+                $class->_quoteColumn( $class->_classDbh($args), $selectField ),
+                $op, $value );
+            $class->_query( $args, $selectField, $value,
+                { query => $query, values => [] }, @fields );
+        }
+    );
+}
+
 sub _query {
     my ( $class, $args, $selectField, $value, $query, @fields ) = @_;
     my %res = ();
@@ -169,11 +212,19 @@ sub _restoreCase {
     return $res;
 }
 
-# Let specialized modules override this syntax if they need to. $field is the
-# column name returned by _quoteColumn()
+# Overriding this only changes deleteIfLowerThan(): searchLt() and searchGt()
+# use _buildCompareExpression()
 sub _buildLowerThanExpression {
-    my ( $class, $field, $value ) = @_;
-    return "cast($field as integer) < $value";
+    my ( $class, $field, $value, @args ) = @_;
+    return $class->_buildCompareExpression( $field, '<', $value, @args );
+}
+
+# Let specialized modules override this syntax if they need to. $op is "<" or
+# ">", $value a number checked by the caller
+sub _buildCompareExpression {
+    my ( $class, $field, $op, $value ) = @_;
+    $class->_checkOp($op);
+    return "cast($field as integer) $op $value";
 }
 
 sub get_key_from_all_sessions {

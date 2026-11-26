@@ -54,7 +54,7 @@ sub _checkThresholds {
     my $thresholds = $rule->{or} || $rule->{and};
     return 1 unless ( ref($thresholds) eq 'HASH' );
     foreach ( values %$thresholds ) {
-        unless ( defined($_) and /^-?[0-9]+(?:\.[0-9]+)?\z/ ) {
+        unless ( $class->_isNumber($_) ) {
             print STDERR "deleteIfLowerThan: threshold must be a number\n";
             return 0;
         }
@@ -97,6 +97,78 @@ sub _tableName {
     my ( $class, $dbh, $args ) = @_;
     return $class->_quoteIdentifier( $dbh,
         $args->{TableName} || $Apache::Session::Store::DBI::TableName );
+}
+
+# Digits are bounded: MySQL and Oracle reject out-of-range literals
+sub _isNumber {
+    my ( $class, $value ) = @_;
+    return ( defined($value)
+          and $value =~ /^-?[0-9]{1,20}(?:\.[0-9]{1,20})?\z/ );
+}
+
+# The operator of a comparison is inserted into SQL queries
+sub _checkOp {
+    my ( $class, $op ) = @_;
+    die "_buildCompareExpression: invalid operator '"
+      . ( defined $op ? $op : 'undef' ) . "'\n"
+      unless ( defined $op and ( $op eq '<' or $op eq '>' ) );
+    return $op;
+}
+
+# searchLt() and searchGt() values are also inserted into SQL queries. Return
+# the value without surrounding spaces (kept by the Lemonldap::NG CLI), or
+# undef if it isn't a number
+sub _checkSearchValue {
+    my ( $class, $op, $value ) = @_;
+    $value =~ s/^\s+|\s+\z//g if ( defined $value );
+    unless ( $class->_isNumber($value) ) {
+        print STDERR 'search'
+          . ( $op eq '<' ? 'Lt' : 'Gt' )
+          . ": value must be a number\n";
+        return undef;
+    }
+    return $value;
+}
+
+# Run the SQL query of searchLt() and searchGt(): the database may reject
+# the comparison (a cast of a text column, for example). Print the error and
+# return an empty result, as the Perl version does for non numeric values
+sub _searchQuery {
+    my ( $class, $op, $sub ) = @_;
+    my $res = eval { $sub->() };
+    if ($@) {
+        my $err = $@;
+        chomp $err;
+        print STDERR 'search' . ( $op eq '<' ? 'Lt' : 'Gt' ) . ": $err\n";
+        return {};
+    }
+    return $res;
+}
+
+# Perl version of searchLt() and searchGt(): read all sessions and keep those
+# for which $test->( value of $selectField ) is true. As in SQL, a value that
+# doesn't start with a number is 0: Perl would read "inf" or "nan" as
+# Infinity and NaN
+sub _searchByTest {
+    my ( $class, $args, $selectField, $test, @fields ) = @_;
+    my %res;
+    $class->get_key_from_all_sessions(
+        $args,
+        sub {
+            my ( $entry, $id ) = @_;
+            my $v = $entry->{$selectField};
+            $v = 0 if ( defined $v and $v !~ /^\s*-?[0-9]/ );
+            return undef unless ( $test->($v) );
+            if (@fields) {
+                $res{$id}->{$_} = $entry->{$_} foreach (@fields);
+            }
+            else {
+                $res{$id} = $entry;
+            }
+            undef;
+        }
+    );
+    return \%res;
 }
 
 # Get the unserialize sub of a class (populate() may be inherited)
@@ -148,7 +220,7 @@ sub _checkThresholds {
     my $thresholds = $rule->{or} || $rule->{and};
     return 1 unless ( ref($thresholds) eq 'HASH' );
     foreach ( values %$thresholds ) {
-        unless ( defined($_) and /^-?[0-9]+(?:\.[0-9]+)?\z/ ) {
+        unless ( $class->_isNumber($_) ) {
             print STDERR "deleteIfLowerThan: threshold must be a number\n";
             return 0;
         }

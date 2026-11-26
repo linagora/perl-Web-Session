@@ -50,8 +50,8 @@ sub reset_sessions {
 
 sub remaining {
     my ($ids) = @_;
-    my $all = $class->get_key_from_all_sessions($args);
-    my %rev = reverse %$ids;
+    my $all   = $class->get_key_from_all_sessions($args);
+    my %rev   = reverse %$ids;
     return join ',', sort map { $rev{$_} } keys %$all;
 }
 
@@ -361,7 +361,7 @@ ok( $class->deleteIfLowerThan( $args, { or => { _utime => '-1' } } ),
     }
 }
 
-# 11. Invalid batch sizes fall back to the default one
+# Invalid batch sizes fall back to the default one
 {
     no warnings 'once';
     $ids = reset_sessions( map { ( "s$_" => { uid => "u$_" } ) } 1 .. 3 );
@@ -382,7 +382,7 @@ ok( $class->deleteIfLowerThan( $args, { or => { _utime => '-1' } } ),
     }
 }
 
-# 12. Subclass without its own populate()
+# Subclass without its own populate()
 {
 
     package My::SQLiteSubclass;
@@ -428,7 +428,7 @@ $ids = reset_sessions(
     a => { _utime => 100, _session_kind => 'SSO' },
     b => { _utime => 100, _session_kind => 'Persistent' },
 );
-foreach my $bad ( '100 OR 1=1', '1e3', '', undef ) {
+foreach my $bad ( '100 OR 1=1', '1e3', '', undef, '1' x 21, '9' x 400 ) {
     is(
         quiet {
             eval {
@@ -464,6 +464,128 @@ ok( $class->deleteIfLowerThan( $args, { or => { _utime => '100.5' } } ),
     'decimal threshold accepted' );
 ok( $class->deleteIfLowerThan( $args, { or => { _utime => '-1' } } ),
     'negative threshold accepted' );
+
+# searchLt() and searchGt(): indexed fields are compared in SQL, other
+# ones in Perl. Both compare "abc" as 0 and "250x" as 250. Sessions without
+# the field are never returned
+$ids = reset_sessions(
+    a    => { _utime => 100,    n => 100 },
+    b    => { _utime => 200,    n => 200 },
+    c    => { _utime => 300,    n => 300 },
+    str  => { _utime => 'abc',  n => 'abc' },
+    pre  => { _utime => '250x', n => '250x' },
+    none => { uid    => 'none' },
+);
+%rev = reverse %$ids;
+my @sql;
+{
+    my $cdbh = $class->_classDbh($args);
+    local $cdbh->{Callbacks} = {
+        prepare => sub { push @sql, $_[1]; return }
+    };
+    foreach (
+        [ searchLt =>  250,    'a,b,str' ],
+        [ searchGt =>  200,    'c,pre' ],
+        [ searchLt =>  1,      'str' ],
+        [ searchGt => -1,      'a,b,c,pre,str' ],
+        [ searchLt => '250.5', 'a,b,pre,str' ],
+      )
+    {
+        my ( $m, $v, $expected ) = @$_;
+        foreach my $f (qw(_utime n)) {
+            @sql = ();
+            $res = $class->$m( $args, $f, $v );
+            is( join( ',', sort map { $rev{$_} } keys %$res ),
+                $expected, "$m $f $v" );
+            my $op = $m eq 'searchLt' ? '<' : '>';
+            if ( $f eq '_utime' ) {
+                is_deeply(
+                    \@sql,
+                    [
+qq{SELECT id,a_session from "sessions" where cast("_utime" as integer) $op $v}
+                    ],
+                    "$m $f $v: compared in SQL"
+                );
+            }
+            else {
+                unlike( join( "\n", @sql ),
+                    qr/cast\(/, "$m $f $v: compared in Perl" );
+            }
+        }
+    }
+}
+$res = $class->searchLt( $args, '_utime', 150 );
+is( $res->{ $ids->{a} }->{n}, 100, 'searchLt without fields returns sessions' );
+foreach my $f (qw(_utime n)) {
+    $res = $class->searchGt( $args, $f, 250, $f, 'uid' );
+    is_deeply( [ map { $_->{$f} } values %$res ],
+        [300], "searchGt $f with fields: 1 session" );
+    is(
+        join( ',', sort grep { $_ ne 'id' } keys %{ ( values %$res )[0] } ),
+        join( ',', sort $f, 'uid' ),
+        "searchGt $f with fields: requested fields"
+    );
+}
+foreach my $bad ( '100 OR 1=1', '1e3', '', undef, 'abc', '1' x 21, '9' x 400 ) {
+    foreach my $m (qw(searchLt searchGt)) {
+        $res = quiet { $class->$m( $args, '_utime', $bad ) };
+        is_deeply( $res, {},
+            "$m with value " . ( $bad // 'undef' ) . ': nothing returned' );
+    }
+}
+
+# Values that are not integers differ: SQL keeps only an integer prefix
+# (12.7 is 12, 1e3 is 1), Perl compares the numeric value
+$ids = reset_sessions(
+    dec => { _utime => '12.7', n => '12.7' },
+    exp => { _utime => '1e3',  n => '1e3' },
+);
+%rev = reverse %$ids;
+$res = $class->searchGt( $args, '_utime', 12 );
+is( join( ',', sort map { $rev{$_} } keys %$res ),
+    '', 'searchGt in SQL: integer prefix' );
+$res = $class->searchGt( $args, 'n', 12 );
+is( join( ',', sort map { $rev{$_} } keys %$res ),
+    'dec,exp', 'searchGt in Perl: numeric value' );
+
+# A field name containing a quote is quoted as an identifier, as in
+# searchOn(): never interpolated as is in SQL. The table has no such column
+# (SQLite then reads the quoted name as a string: results aren't checked)
+$ids = reset_sessions(
+    a => { uid => 'a', "a'b" => 100 },
+    b => { uid => 'b', "a'b" => 300 },
+);
+my $quoteArgs = { %$args, Index => [ 'uid', "a'b" ] };
+{
+    my @sql;
+    my $cdbh = $class->_classDbh($quoteArgs);
+    local $cdbh->{Callbacks} = {
+        prepare => sub { push @sql, $_[1]; return }
+    };
+    foreach my $m (qw(searchLt searchGt)) {
+        @sql = ();
+        quiet_err { eval { $class->$m( $quoteArgs, "a'b", 200 ) } };
+        is( $@, '', "$m with a quoted field name: no error" );
+        like(
+            join( "\n", @sql ),
+            qr/cast\("a'b" as integer\)/,
+            "$m with a quoted field name: quoted identifier"
+        );
+    }
+}
+
+# An SQL error in searchLt() and searchGt() doesn't die: nothing is
+# returned and the error is printed on STDERR
+foreach my $m (qw(searchLt searchGt)) {
+    ( $ret, $err ) = quiet_err {
+        eval {
+            $class->$m( { %$args, TableName => 'no_such_table' },
+                '_utime', 150 );
+        };
+    };
+    is_deeply( $ret, {}, "$m: SQL error returns nothing" ) or diag $@;
+    like( $err, qr/^$m: .*no_such_table/m, "$m: SQL error printed on STDERR" );
+}
 
 done_testing();
 

@@ -70,6 +70,7 @@ t/Apache-Session-Browseable-Redis-batches.t
 t/Apache-Session-Browseable-Redis-searchLtGt.t
 t/Apache-Session-Browseable-Redis-utf8.t
 t/Apache-Session-Browseable-Redis-purge.t
+t/Apache-Session-Browseable-searchLtGt.t
 t/Apache-Session-Browseable-SQLite.t
 t/Apache-Session-Browseable-Store-DBI.t
 t/Apache-Session-Browseable-Store-MariaDBJSON.t

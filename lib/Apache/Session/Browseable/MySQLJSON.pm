@@ -60,6 +60,23 @@ sub searchOnExpr {
     return $class->_query( $args, $query, @fields );
 }
 
+# searchLt() and searchGt() are inherited from DBI.pm: any field can be
+# compared in SQL here
+sub _searchCompare {
+    my ( $class, $op, $args, $selectField, $value, @fields ) = @_;
+    $value = $class->_checkSearchValue( $op, $value );
+    return {} unless ( defined $value );
+    my $dbh   = $class->_classDbh($args);
+    my $query = {
+        query => $class->_buildCompareExpression(
+            $selectField, $op, $value, $dbh, $args
+        ),
+        values => []
+    };
+    return $class->_searchQuery( $op,
+        sub { $class->_query( $args, $query, @fields ) } );
+}
+
 sub _query {
     my ( $class, $args, $query, @fields ) = @_;
     my %res = ();
@@ -204,10 +221,11 @@ sub get_key_from_all_sessions {
 # JSON path) and connection arguments. The handle is optional: without one,
 # _sqlPath() quotes the path. The expression must match the documented
 # generated columns
-sub _buildLowerThanExpression {
-    my ( $class, $field, $value, $dbh, $args ) = @_;
+sub _buildCompareExpression {
+    my ( $class, $field, $op, $value, $dbh, $args ) = @_;
+    $class->_checkOp($op);
     my $f = $class->_sqlField( $dbh, $field, $args );
-    return "cast($f as UNSIGNED) < $value";
+    return "cast($f as UNSIGNED) $op $value";
 }
 
 # Build SQL expression to get a field from a_session ($args: connection
@@ -327,12 +345,15 @@ indexes:
           AS (cast(a_session->>'$._utime' as unsigned)) VIRTUAL,
       as_ls bigint unsigned
           AS (cast(a_session->>'$._lastSeen' as unsigned)) VIRTUAL,
+      as_rt bigint unsigned
+          AS (cast(a_session->>'$._oidcRtUpdate' as unsigned)) VIRTUAL,
       as_ip varchar(64) COLLATE utf8mb4_bin
           AS (a_session->>'$.ipAddr') VIRTUAL,
       KEY as_wt (as_wt),
       KEY as_sk (as_sk),
       KEY as_ut (as_ut),
       KEY as_ls (as_ls),
+      KEY as_rt (as_rt),
       KEY as_ip (as_ip)
   ) ENGINE=InnoDB;
 
@@ -358,11 +379,15 @@ then deletes sessions whose C<_utime> B<or> C<_lastSeen> is too old, and an
 C<OR> with a non indexed side forces a full table scan (with both keys, MySQL
 uses an C<index_merge>).
 
+C<as_rt> is useful when OpenID Connect relying parties have a refresh token
+activity timeout: sessions purge then calls searchLt() on C<_oidcRtUpdate>.
+
 With strict SQL mode (default since MySQL 5.7), a value that doesn't fit its
 indexed generated column makes the session storage fail: a string longer than
-the column, or a non integer C<_utime> or C<_lastSeen> value
+the column, or a non integer C<_utime>, C<_lastSeen> or C<_oidcRtUpdate> value
 (C<cast('1.5' as unsigned)> is an error in this case). Size C<varchar> columns
-generously; Lemonldap::NG always writes integer C<_utime> and C<_lastSeen>.
+generously; Lemonldap::NG always writes integer C<_utime>, C<_lastSeen> and
+C<_oidcRtUpdate>.
 These values must be non negative integers: a JSON C<null> (for example
 C<_lastSeen =E<gt> undef>) or a negative number is refused too, since
 C<-E<gt>E<gt>> returns the string C<'null'> (not SQL C<NULL>) and the session
@@ -385,10 +410,13 @@ then create the new ones:
           AS (cast(a_session->>'$._utime' as unsigned)) VIRTUAL,
       ADD COLUMN as_ls bigint unsigned
           AS (cast(a_session->>'$._lastSeen' as unsigned)) VIRTUAL,
+      ADD COLUMN as_rt bigint unsigned
+          AS (cast(a_session->>'$._oidcRtUpdate' as unsigned)) VIRTUAL,
       ADD COLUMN as_ip varchar(64) COLLATE utf8mb4_bin
           AS (a_session->>'$.ipAddr') VIRTUAL,
       ADD KEY as_wt (as_wt), ADD KEY as_sk (as_sk),
-      ADD KEY as_ut (as_ut), ADD KEY as_ls (as_ls), ADD KEY as_ip (as_ip);
+      ADD KEY as_ut (as_ut), ADD KEY as_ls (as_ls), ADD KEY as_rt (as_rt),
+      ADD KEY as_ip (as_ip);
 
 Use it with Perl:
 
@@ -417,6 +445,34 @@ sessions and add the capability to index some fields to make research faster.
 
 Apache::Session::Browseable::MySQLJSON implements it for MySQL databases
 using "json" type to be able to browse sessions.
+
+=head2 searchLt() and searchGt()
+
+  # Sessions whose _utime is lower than $time
+  my $hash = Apache::Session::Browseable::MySQLJSON->searchLt( $args,
+      '_utime', $time, 'uid' );
+
+searchLt() and searchGt() take the same arguments and return the same data as
+searchOn(): sessions whose field is lower (or greater) than the given value,
+which is excluded. The value must be a number (C<12>, C<-12> or C<12.5>):
+otherwise nothing is returned and an error is printed on STDERR. Spaces
+around the value are ignored.
+
+Fields are compared in SQL as deleteIfLowerThan() does
+(C<cast(a_session-E<gt>E<gt>'$.field' as unsigned)>), so the index of a
+generated column declared as C<as_ut> or C<as_rt> above is used. Values are
+compared as unsigned integers: a non-numeric value is 0.
+
+Sessions without the field are never returned. This differs from the Perl
+fallback of Lemonldap::NG, where a missing field is compared as 0: searchLt()
+would then return nearly all sessions. Lemonldap::NG doesn't need them: its
+sessions purge ignores sessions without C<_oidcRtUpdate>.
+
+Because of the unsigned cast, two cases differ from a numeric comparison: a
+field stored as JSON C<null> is 0 (C<-E<gt>E<gt>> returns the string
+C<null>), so searchLt() returns it, and a negative value becomes a huge
+number (C<-5> is found by C<searchGt( $args, $field, 50 )>). Lemonldap::NG
+timestamps are positive integers.
 
 This module isn't usable with MariaDB: use
 L<Apache::Session::Browseable::MariaDBJSON> instead.

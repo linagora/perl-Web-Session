@@ -68,6 +68,7 @@ sub get_key_from_all_sessions {
 }
 
 1;
+__END__
 
 =head1 NAME
 

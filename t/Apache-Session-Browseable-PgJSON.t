@@ -15,6 +15,8 @@ run_tests(
           . " ( ( cast(a_session ->> '_utime' AS bigint) ) )",
         'CREATE INDEX __TABLE___ls1 ON __TABLE__'
           . " ( ( cast(a_session ->> '_lastSeen' AS bigint) ) )",
+        'CREATE INDEX __TABLE___rt1 ON __TABLE__'
+          . " ( ( cast(a_session ->> '_oidcRtUpdate' AS bigint) ) )",
     ],
     null => 1,
     json  => 1,
@@ -28,6 +30,9 @@ run_tests(
         my ( $ut, $ls ) =
           map { $class->_buildLowerThanExpression( $_, 200 ) }
           qw(_utime _lastSeen);
+        my ( $rtlt, $rtgt ) =
+          map { $class->_buildCompareExpression( '_oidcRtUpdate', $_, 200 ) }
+          qw(< >);
         my ( $wt, $sk ) =
           map { "a_session ->> '$_'" } qw(_whatToTrace _session_kind);
         return (
@@ -39,6 +44,8 @@ run_tests(
             ],
             [ 'searchOnExpr', "$wt like 'dw%'", '__TABLE___uid1' ],
             [ 'searchOn',     "$wt = 'dwho'",   '__TABLE___uid1' ],
+            [ 'searchLt',     $rtlt,            '__TABLE___rt1' ],
+            [ 'searchGt',     $rtgt,            '__TABLE___rt1' ],
         );
     },
 );

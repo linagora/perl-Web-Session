@@ -27,9 +27,10 @@ sub populate {
 
 # No CAST (default in DBI.pm): MySQL converts values implicitly and a CAST
 # prevents the use of an index on the field
-sub _buildLowerThanExpression {
-    my ( $class, $field, $value ) = @_;
-    return "$field < $value";
+sub _buildCompareExpression {
+    my ( $class, $field, $op, $value ) = @_;
+    $class->_checkOp($op);
+    return "$field $op $value";
 }
 
 1;
@@ -51,6 +52,7 @@ Create table with columns for indexed fields. Example for Lemonldap::NG:
       _session_kind varchar(32) COLLATE utf8mb4_bin,
       _utime bigint,
       _lastSeen bigint,
+      _oidcRtUpdate bigint,
       ipAddr varchar(64) COLLATE utf8mb4_bin
   );
 
@@ -60,6 +62,7 @@ Add indexes:
   CREATE INDEX s1   ON sessions (_session_kind);
   CREATE INDEX u1   ON sessions (_utime);
   CREATE INDEX ls1  ON sessions (_lastSeen);
+  CREATE INDEX rt1  ON sessions (_oidcRtUpdate);
   CREATE INDEX ip1  ON sessions (ipAddr) USING BTREE;
 
 Indexed columns can't be C<text>: MySQL can't index them without a prefix
@@ -81,6 +84,16 @@ every session write fail. First create the column and its index:
 then backfill it (see L<Apache::Session::Browseable/"ADDING A COLUMN TO Index ON AN EXISTING TABLE">)
 and only then add C<_lastSeen> to C<Index>.
 
+Sessions created before this column and its C<Index> entry were added keep a
+NULL value until they are written again, so searchLt() never finds them (and
+the Lemonldap::NG refresh token purge skips them). Backfill the column, see
+L<Apache::Session::Browseable/"ADDING A COLUMN TO Index ON AN EXISTING TABLE">.
+Example, with the JSON serializer:
+
+  UPDATE sessions
+      SET _oidcRtUpdate = JSON_UNQUOTE(JSON_EXTRACT(a_session, '$._oidcRtUpdate'))
+      WHERE _oidcRtUpdate IS NULL;
+
 Searches must be exact (case and accent sensitive). Text columns listed in
 C<Index> must use the C<utf8mb4_bin> collation: otherwise, searches on indexed
 fields follow the table collation (case and accent insensitive with
@@ -101,6 +114,11 @@ To fix an existing table:
       MODIFY _session_kind varchar(32) COLLATE utf8mb4_bin,
       MODIFY ipAddr varchar(64) COLLATE utf8mb4_bin;
 
+C<_oidcRtUpdate> column and index are useful when OpenID Connect relying
+parties have a refresh token activity timeout: sessions purge then calls
+searchLt() on C<_oidcRtUpdate>, which reads all sessions unless this field is
+in C<Index>.
+
 With strict SQL mode (default since MySQL 5.7), storing a value longer than
 its column fails, so the whole session can't be saved: size C<varchar>
 columns generously.
@@ -118,7 +136,8 @@ Use it with Perl:
        LockPassword   => $db_pass,
 
        # Choose your browseable fileds
-       Index          => '_whatToTrace _session_kind _utime _lastSeen ipAddr',
+       Index          => '_whatToTrace _session_kind _utime _lastSeen'
+                       . ' _oidcRtUpdate ipAddr',
   };
   
   # Use it like Apache::Session

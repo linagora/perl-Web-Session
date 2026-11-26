@@ -129,11 +129,12 @@ sub _checkIndex {
 }
 
 # No CAST for indexed fields: it would prevent the use of the index
-sub _buildLowerThanExpression {
-    my ( $class, $field, $value, $dbh, $args ) = @_;
-    return $class->_sqlField( $dbh, $field, $args ) . " < $value"
+sub _buildCompareExpression {
+    my ( $class, $field, $op, $value, $dbh, $args ) = @_;
+    $class->_checkOp($op);
+    return $class->_sqlField( $dbh, $field, $args ) . " $op $value"
       if ( $class->_useColumn( $dbh, $field, $args ) );
-    return $class->SUPER::_buildLowerThanExpression( $field, $value, $dbh );
+    return $class->SUPER::_buildCompareExpression( $field, $op, $value, $dbh );
 }
 
 1;
@@ -159,12 +160,16 @@ Create table. Example for Lemonldap::NG with generated columns and indexes:
           AS (cast(JSON_VALUE(a_session, '$._utime') as unsigned)) VIRTUAL,
       _lastSeen bigint unsigned
           AS (cast(JSON_VALUE(a_session, '$._lastSeen') as unsigned)) VIRTUAL,
+      _oidcRtUpdate bigint unsigned
+          AS (cast(JSON_VALUE(a_session, '$._oidcRtUpdate') as unsigned))
+          VIRTUAL,
       ipAddr varchar(64) COLLATE utf8mb4_bin
           AS (JSON_VALUE(a_session, '$.ipAddr')) VIRTUAL,
       KEY _whatToTrace (_whatToTrace),
       KEY _session_kind (_session_kind),
       KEY _utime (_utime),
       KEY _lastSeen (_lastSeen),
+      KEY _oidcRtUpdate (_oidcRtUpdate),
       KEY ipAddr (ipAddr)
   ) ENGINE=InnoDB;
 
@@ -181,7 +186,8 @@ Use it with Perl:
        Password   => $db_pass,
 
        # Fields that have a generated column
-       Index      => '_whatToTrace _session_kind _utime _lastSeen ipAddr',
+       Index      => '_whatToTrace _session_kind _utime _lastSeen'
+                   . ' _oidcRtUpdate ipAddr',
   };
 
 The DSN selects the driver: C<dbi:MariaDB:...> requires DBD::MariaDB and
@@ -238,16 +244,16 @@ fields are compared exactly.
 
 =item *
 
-C<_utime>, C<_lastSeen> (and other indexed fields used by
-deleteIfLowerThan()) must be integer columns: deleteIfLowerThan() compares
-the column directly (it casts other fields to C<unsigned>).
+C<_utime>, C<_lastSeen>, C<_oidcRtUpdate> (and other indexed fields used by
+deleteIfLowerThan(), searchLt() or searchGt()) must be integer columns: these
+methods compare the column directly (they cast other fields to C<unsigned>).
 
 =item *
 
 With strict SQL mode, a value that doesn't fit into its column (too
-long string, non-integer C<_utime> or C<_lastSeen>) makes the session storage
-fail: size C<varchar> columns generously; Lemonldap::NG always writes integer
-C<_utime> and C<_lastSeen>.
+long string, non-integer C<_utime>, C<_lastSeen> or C<_oidcRtUpdate>) makes
+the session storage fail: size C<varchar> columns generously; Lemonldap::NG
+always writes integer C<_utime>, C<_lastSeen> and C<_oidcRtUpdate>.
 
 =back
 
@@ -255,6 +261,10 @@ C<_lastSeen> is needed when Lemonldap::NG "timeoutActivity" is used: sessions
 purge then deletes sessions whose C<_utime> B<or> C<_lastSeen> is too old,
 and an C<OR> with a non indexed side forces a full table scan (with both
 columns, MariaDB uses an C<index_merge>).
+
+C<_oidcRtUpdate> is useful when OpenID Connect relying parties have a refresh
+token activity timeout: sessions purge then calls searchLt() on
+C<_oidcRtUpdate>.
 
 Fields that are not listed in C<Index> are read with
 C<JSON_VALUE(a_session, '$.field')>. C<JSON_VALUE> returns C<NULL> for missing
@@ -286,6 +296,34 @@ works with DBD::MariaDB (C<dbi:MariaDB:...>) and DBD::mysql
 (C<dbi:mysql:...>). It has been tested with MariaDB 10.11 and 11.8.
 
 For MySQL, use L<Apache::Session::Browseable::MySQLJSON>.
+
+=head2 searchLt() and searchGt()
+
+  # Sessions whose _utime is lower than $time
+  my $hash = Apache::Session::Browseable::MariaDBJSON->searchLt( $args,
+      '_utime', $time, 'uid' );
+
+searchLt() and searchGt() take the same arguments and return the same data as
+searchOn(): sessions whose field is lower (or greater) than the given value,
+which is excluded. The value must be a number (C<12>, C<-12> or C<12.5>):
+otherwise nothing is returned and an error is printed on STDERR. Spaces
+around the value are ignored.
+
+Fields are compared in SQL as deleteIfLowerThan() does: fields listed in
+C<Index> on their (integer) generated column, which index is used (only if
+the Index check accepted this column, see above), other fields with C<cast(JSON_VALUE(a_session, '$.field') as unsigned)>. Values are
+compared as unsigned integers: a non-numeric value is 0.
+
+Sessions without the field are never returned. This differs from the Perl
+fallback of Lemonldap::NG, where a missing field is compared as 0: searchLt()
+would then return nearly all sessions. Lemonldap::NG doesn't need them: its
+sessions purge ignores sessions without C<_oidcRtUpdate>. A field stored as
+JSON C<null> is skipped too (C<JSON_VALUE> returns C<NULL>).
+
+For fields not listed in C<Index>, a negative value becomes a huge number
+because of the unsigned cast (C<-5> is found by
+C<searchGt( $args, $field, 50 )>). Lemonldap::NG timestamps are positive
+integers.
 
 =head1 SEE ALSO
 

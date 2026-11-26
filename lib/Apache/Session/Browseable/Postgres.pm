@@ -66,11 +66,43 @@ sub get_key_from_all_sessions {
     return $res;
 }
 
+# PostgreSQL folds unquoted column names to lower case: restore the case of
+# requested fields in the result set
+sub _restoreCase {
+    my ( $res, @fields ) = @_;
+    foreach my $f (@fields) {
+        next if ref($f) or $f eq lc($f);
+        my $lc = lc $f;
+        foreach my $s ( keys %$res ) {
+            my $h = $res->{$s};
+            next unless ref($h) eq 'HASH';
+            $h->{$f} = delete $h->{$lc}
+              if exists $h->{$lc} and not exists $h->{$f};
+        }
+    }
+    return $res;
+}
+
+sub searchLt {
+    my $class = shift;
+    my ( $args, $selectField, $value, @fields ) = @_;
+    my $res = $class->SUPER::searchLt(@_);
+    return _restoreCase( $res, @fields );
+}
+
+sub searchGt {
+    my $class = shift;
+    my ( $args, $selectField, $value, @fields ) = @_;
+    my $res = $class->SUPER::searchGt(@_);
+    return _restoreCase( $res, @fields );
+}
+
 # Cast to bigint instead of integer: PostgreSQL drops this cast on a bigint
 # column, so its index can be used
-sub _buildLowerThanExpression {
-    my ( $class, $field, $value ) = @_;
-    return "cast($field as bigint) < $value";
+sub _buildCompareExpression {
+    my ( $class, $field, $op, $value ) = @_;
+    $class->_checkOp($op);
+    return "cast($field as bigint) $op $value";
 }
 
 1;
@@ -92,6 +124,7 @@ Create table with columns for indexed fields. Example for Lemonldap::NG:
       _session_kind text,
       _utime bigint,
       _lastSeen bigint,
+      _oidcRtUpdate bigint,
       ipAddr varchar(64)
   );
 
@@ -101,6 +134,7 @@ Add indexes:
   CREATE INDEX s1   ON sessions (_session_kind);
   CREATE INDEX u1   ON sessions (_utime);
   CREATE INDEX ls1  ON sessions (_lastSeen);
+  CREATE INDEX rt1  ON sessions (_oidcRtUpdate);
   CREATE INDEX ip1  ON sessions USING BTREE (ipAddr varchar_pattern_ops);
 
 searchOnExpr() uses C<LIKE 'prefix%'> queries: unless the database uses the
@@ -127,6 +161,22 @@ every session write fail. First create the column and its index:
 then backfill it (see L<Apache::Session::Browseable/"ADDING A COLUMN TO Index ON AN EXISTING TABLE">)
 and only then add C<_lastSeen> to C<Index>.
 
+C<_oidcRtUpdate> column and index are useful when OpenID Connect relying
+parties have a refresh token activity timeout: sessions purge then calls
+searchLt() on C<_oidcRtUpdate>, which reads all sessions unless this field is
+in C<Index>.
+
+Sessions created before this column and its C<Index> entry were added keep a
+NULL value until they are written again, so searchLt() never finds them (and
+the Lemonldap::NG refresh token purge skips them). Backfill the column, see
+L<Apache::Session::Browseable/"ADDING A COLUMN TO Index ON AN EXISTING TABLE">.
+Example, with the JSON serializer:
+
+  UPDATE sessions
+      SET _oidcRtUpdate = (a_session::json->>'_oidcRtUpdate')::bigint
+      WHERE _oidcRtUpdate IS NULL
+        AND a_session::json->>'_oidcRtUpdate' IS NOT NULL;
+
 Use it with Perl:
 
   use Apache::Session::Browseable::Postgres;
@@ -138,7 +188,8 @@ Use it with Perl:
        Commit     => 1,
 
        # Choose your browseable fileds
-       Index      => '_whatToTrace _session_kind _utime _lastSeen ipAddr',
+       Index      => '_whatToTrace _session_kind _utime _lastSeen'
+                   . ' _oidcRtUpdate ipAddr',
   };
   
   # Use it like Apache::Session
