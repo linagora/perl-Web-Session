@@ -32,6 +32,47 @@ sub unserialize {
     return $tmp->{data};
 }
 
+# Keys per SCAN call (a hint for Redis)
+our $SCAN_COUNT = 1000;
+
+# Keys per MGET: a huge index set must not block Redis with one big command
+our $MGET_BATCH = 500;
+
+# Like $redisObj->mget(@keys), in batches. MGET returns undef for missing
+# keys and keys that aren't strings
+sub _mget {
+    my ( $redisObj, @keys ) = @_;
+    my @res;
+    while (@keys) {
+        push @res, $redisObj->mget( splice( @keys, 0, $MGET_BATCH ) );
+    }
+    return @res;
+}
+
+# Members of index sets @$sets, read in one pipeline: { set => [ keys ] }.
+# A key that isn't a set is ignored; other Redis errors are raised
+sub _smembers {
+    my ( $redisObj, $sets ) = @_;
+    my ( %res, $fatal );
+    foreach my $set (@$sets) {
+        $redisObj->smembers(
+            $set,
+            sub {
+                my ( $reply, $err ) = @_;
+                if ($err) {
+                    $fatal //= $err unless ( $err =~ /WRONGTYPE/ );
+                }
+                else {
+                    $res{$set} = $reply;
+                }
+            }
+        );
+    }
+    $redisObj->wait_all_responses;
+    die $fatal if ($fatal);
+    return \%res;
+}
+
 # Remove session KEYS[2] from index KEYS[1] only if it doesn't exist, in one
 # step: a concurrent writer may be recreating it
 our $SREM_ORPHAN = q{if redis.call('exists',KEYS[2])==0 then }
@@ -70,19 +111,6 @@ sub _removeOrphan {
     }
 }
 
-# Value of key $k and a flag set if it isn't a string (WRONGTYPE: another
-# application's key, kept in the index). Other Redis errors are fatal: an
-# empty result would be taken for "no session"
-sub _getString {
-    my ( $redisObj, $k ) = @_;
-    my $v = eval { $redisObj->get($k) };
-    if ($@) {
-        die $@ unless ( $@ =~ /WRONGTYPE/ );
-        return ( undef, 1 );
-    }
-    return ( $v, 0 );
-}
-
 sub searchOn {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
 
@@ -96,12 +124,13 @@ sub searchOn {
             die $@ unless ( $@ =~ /WRONGTYPE/ );
             @keys = ();
         }
-        foreach my $k (@keys) {
 
-            # Members of another application are neither read nor removed
-            next unless ( $k and $class->isLlngKey( $args, $k ) );
-            my ( $tmp, $wrongType ) = _getString( $redisObj, $k );
-            next if ($wrongType);
+        # Members of another application are neither read nor removed
+        @keys = grep { $_ and $class->isLlngKey( $args, $_ ) } @keys;
+        my %values;
+        @values{@keys} = _mget( $redisObj, @keys );
+        foreach my $k (@keys) {
+            my $tmp = $values{$k};
             unless ($tmp) {
                 # Lazy cleanup: remove orphan from index
                 $class->_removeOrphan( $redisObj, $index_key, $k );
@@ -183,17 +212,24 @@ sub searchOnExpr {
         do {
             my ( $new_cursor, $sets ) =
               $redisObj->scan( $cursor,
-                MATCH => _exprPattern( $selectField, $value ) );
-            foreach my $set (@$sets) {
-                next unless $redisObj->type($set) eq 'set';
-                my @keys = $redisObj->smembers($set);
-                foreach my $k (@keys) {
+                MATCH => _exprPattern( $selectField, $value ),
+                COUNT => $SCAN_COUNT );
 
-                    # Members of another application are neither read nor
-                    # removed
-                    next unless ( $k and $class->isLlngKey( $args, $k ) );
-                    my ( $v, $wrongType ) = _getString( $redisObj, $k );
-                    next if ($wrongType);
+            # The sets of a SCAN page are read together: a few round trips
+            # instead of two per set. Members of another application are
+            # neither read nor removed
+            my $members = _smembers( $redisObj, $sets );
+            foreach my $set ( keys %$members ) {
+                $members->{$set} = [ grep { $_ and $class->isLlngKey( $args, $_ ) }
+                      @{ $members->{$set} } ];
+            }
+            my %seen;
+            my @keys = grep { !$seen{$_}++ } map { @$_ } values %$members;
+            my %values;
+            @values{@keys} = _mget( $redisObj, @keys );
+            foreach my $set ( keys %$members ) {
+                foreach my $k ( @{ $members->{$set} } ) {
+                    my $v = $values{$k};
                     unless ($v) {
                         # Lazy cleanup: remove orphan from index
                         $class->_removeOrphan( $redisObj, $set, $k );
