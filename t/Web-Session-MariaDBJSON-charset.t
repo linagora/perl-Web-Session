@@ -56,14 +56,22 @@ ok(
     'class handle with DBD::MariaDB: no mysql_* attribute'
 );
 
-# Store
+# Store: the connection is reused by default
 my $s = bless {}, $store;
 @calls = ();
 $s->connection( { args => { %$args, TableName => 't' } } );
-is( $calls[0]->[0],                         'connect', 'store connects' );
-is( $calls[0]->[4]->{mysql_enable_utf8mb4}, 1,         'store: utf8mb4' );
-ok( $s->{disconnect}, 'store closes the connection it opens' );
+is( $calls[0]->[0], 'connect_cached', 'store reuses its connection' );
+is( $calls[0]->[4]->{mysql_enable_utf8mb4}, 1, 'store: utf8mb4' );
+ok( !$s->{disconnect}, 'store keeps the reused connection' );
 is( $s->{table_name}, 't', 'store: table name' );
+
+# noreuse: the store opens and closes its own connection
+$s     = bless {}, $store;
+@calls = ();
+$s->connection( { args => { %$args, TableName => 't', noreuse => 1 } } );
+is( $calls[0]->[0],                         'connect', 'noreuse: store connects' );
+is( $calls[0]->[4]->{mysql_enable_utf8mb4}, 1,         'noreuse: utf8mb4' );
+ok( $s->{disconnect}, 'noreuse: store closes the connection it opens' );
 
 # A given handle is used as is
 my $h = bless {}, 'FakeDbh';

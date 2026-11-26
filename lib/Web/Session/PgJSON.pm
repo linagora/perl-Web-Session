@@ -74,6 +74,10 @@ sub _searchOnQuery {
     my @docs = ( to_json( { $dfield => "$dvalue" } ) );
     push @docs, '{' . to_json( "$dfield", { allow_nonref => 1 } ) . ":$value}"
       if ($literal);
+
+    # JSON::PP doesn't flag its result as UTF-8 when it holds only Latin-1
+    # characters: DBD::Pg would then send Latin-1 bytes
+    utf8::upgrade($_) foreach (@docs);
     return {
         query => '('
           . join( ' OR ', ('a_session @> ?::jsonb') x @docs )

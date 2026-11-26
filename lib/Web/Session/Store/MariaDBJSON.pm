@@ -4,6 +4,7 @@ use strict;
 
 use DBI;
 use Apache::Session::Store::MySQL;
+use Web::Session::Store::DBI;
 
 # Only id and a_session are written: indexed fields are generated columns
 our @ISA     = qw(Apache::Session::Store::MySQL);
@@ -35,9 +36,20 @@ sub connection {
           || $Apache::Session::Store::MySQL::Password;
         $self->{table_name} =
           $args->{TableName} || $Apache::Session::Store::DBI::TableName;
+        my $attr = $self->connectAttributes($datasource);
+
+        # Connection reuse (default), see Web::Session::Store::DBI. This
+        # store doesn't inherit from it: it writes only id and a_session
+        if ( my $dbh =
+            Web::Session::Store::DBI::_reusedHandle( $self, $args,
+                $datasource, $username, $password, $attr ) )
+        {
+            $self->{dbh}        = $dbh;
+            $self->{disconnect} = 0;
+            return;
+        }
         $self->{dbh} =
-          DBI->connect( $datasource, $username, $password,
-            $self->connectAttributes($datasource) )
+          DBI->connect( $datasource, $username, $password, $attr )
           || die $DBI::errstr;
 
         # If we open the connection, we close the connection
