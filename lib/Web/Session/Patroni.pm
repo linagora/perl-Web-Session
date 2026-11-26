@@ -8,7 +8,7 @@ use Apache::Session::Generate::SHA256;
 use Apache::Session::Serialize::JSON;
 
 our @ISA     = qw(Web::Session::PgJSON);
-our $VERSION = '1.3.19';
+our $VERSION = '1.0.0';
 
 sub populate {
     my $self = shift;

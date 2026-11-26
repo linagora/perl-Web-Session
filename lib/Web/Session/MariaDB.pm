@@ -3,7 +3,7 @@ package Web::Session::MariaDB;
 use strict;
 use Web::Session::MariaDBJSON;
 
-our $VERSION = '1.4.0';
+our $VERSION = '1.0.0';
 our @ISA     = qw(Web::Session::MariaDBJSON);
 
 # populate() is also called as a function

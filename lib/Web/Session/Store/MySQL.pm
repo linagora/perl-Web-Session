@@ -7,7 +7,7 @@ use Apache::Session::Store::MySQL;
 
 our @ISA =
   qw(Web::Session::Store::DBI Apache::Session::Store::MySQL);
-our $VERSION = '1.2.2';
+our $VERSION = '1.0.0';
 
 sub connection {
     my ( $self, $session ) = @_;

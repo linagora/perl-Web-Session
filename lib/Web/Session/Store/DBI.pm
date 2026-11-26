@@ -4,7 +4,7 @@ use strict;
 use Apache::Session::Store::DBI;
 use Web::Session::_common;
 our @ISA     = qw(Apache::Session::Store::DBI);
-our $VERSION = 1.3.11;
+our $VERSION = '1.0.0';
 
 # Connection reuse (default): returns a handle cached by DBI->connect_cached()
 # (which pings it and reconnects if needed), opened with the attributes $attr

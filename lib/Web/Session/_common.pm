@@ -3,7 +3,7 @@ package Web::Session::_common;
 use strict;
 use AutoLoader 'AUTOLOAD';
 
-our $VERSION = '1.2.2';
+our $VERSION = '1.0.0';
 
 # Number of sessions read per query by _forEachSession(). Values outside
 # 1..1_000_000 fall back to the default (a huge value would break LIMIT)

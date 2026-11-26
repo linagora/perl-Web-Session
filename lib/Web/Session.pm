@@ -1,6 +1,6 @@
 package Web::Session;
 
-our $VERSION = '1.4.0';
+our $VERSION = '1.0.0';
 
 print STDERR "Use a sub module of Web::Session such as Web::Session::File";
 

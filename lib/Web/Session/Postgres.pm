@@ -3,7 +3,7 @@ package Web::Session::Postgres;
 use strict;
 use Web::Session::PgJSON;
 
-our $VERSION = '1.4.0';
+our $VERSION = '1.0.0';
 our @ISA     = qw(Web::Session::PgJSON);
 
 # populate() is also called as a function

@@ -2,7 +2,7 @@ package Web::Session::Store::Redis;
 
 use strict;
 
-our $VERSION = '1.3.18';
+our $VERSION = '1.0.0';
 
 our $redis;
 our %reused_connections;

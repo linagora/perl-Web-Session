@@ -8,7 +8,7 @@ use Apache::Session::Generate::SHA256;
 use Apache::Session::Serialize::JSON;
 use Web::Session::MySQLJSON;
 
-our $VERSION = '1.3.20';
+our $VERSION = '1.0.0';
 our @ISA     = qw(Web::Session::MySQLJSON);
 
 sub populate {

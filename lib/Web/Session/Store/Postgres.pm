@@ -8,7 +8,7 @@ use Apache::Session::Store::Postgres;
 
 our @ISA =
   qw(Web::Session::Store::DBI Apache::Session::Store::Postgres);
-our $VERSION = '1.4.0';
+our $VERSION = '1.0.0';
 
 # KeepConnections: a pool of connections, per process and per data source
 # (DataSource + UserName), lent to one store at a time: two sessions tied

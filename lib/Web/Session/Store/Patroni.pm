@@ -7,7 +7,7 @@ use Apache::Session::Store::Postgres;
 use Web::Session::Store::DBI;
 
 our @ISA     = qw(Apache::Session::Store::Postgres);
-our $VERSION = '1.3.19';
+our $VERSION = '1.0.0';
 
 # Cache structure per DataSource:
 # {

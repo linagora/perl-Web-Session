@@ -5,7 +5,7 @@ use Fcntl qw(O_RDWR O_CREAT O_EXCL);
 use Errno qw(EEXIST);
 use Apache::Session::Store::File;
 our @ISA     = qw(Apache::Session::Store::File);
-our $VERSION = 1.2.2;
+our $VERSION = '1.0.0';
 
 # The inherited insert() and update() print the serialized session as is, so
 # Perl writes Latin-1 bytes when every character fits in a byte and UTF-8

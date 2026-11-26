@@ -15,7 +15,7 @@ use Net::LDAP::Control::Assertion;
 use Net::LDAP::Control::Paged;
 use Net::LDAP::Util qw(escape_filter_value);
 
-our $VERSION = '1.4.0';
+our $VERSION = '1.0.0';
 our @ISA     = qw(Apache::Session Web::Session::_common);
 
 # Page size of searches that may return many entries

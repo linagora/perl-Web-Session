@@ -3,7 +3,7 @@ package Web::Session::Store::LDAP;
 use strict;
 use Net::LDAP;
 
-our $VERSION = '1.4.0';
+our $VERSION = '1.0.0';
 
 sub new {
     my ( $class, $args ) = @_;

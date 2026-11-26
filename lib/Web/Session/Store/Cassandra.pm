@@ -7,7 +7,7 @@ use Web::Session::Store::DBI;
 use Web::Session::Store::Cassandra;
 
 our @ISA     = qw(Web::Session::Store::DBI);
-our $VERSION = '1.3.13';
+our $VERSION = '1.0.0';
 
 our $DataSource = undef;
 our $UserName   = undef;

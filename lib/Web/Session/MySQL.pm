@@ -3,7 +3,7 @@ package Web::Session::MySQL;
 use strict;
 use Web::Session::MySQLJSON;
 
-our $VERSION = '1.4.0';
+our $VERSION = '1.0.0';
 our @ISA     = qw(Web::Session::MySQLJSON);
 
 # populate() is also called as a function

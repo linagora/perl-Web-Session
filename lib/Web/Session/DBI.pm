@@ -6,7 +6,7 @@ use DBI;
 use Apache::Session;
 use Web::Session::_common;
 
-our $VERSION = '1.3.9';
+our $VERSION = '1.0.0';
 our @ISA     = qw(Apache::Session Web::Session::_common);
 
 sub searchOn {

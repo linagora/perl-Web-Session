@@ -11,7 +11,7 @@ use Web::Session::_common;
 
 use constant SL => ( $^O and $^O =~ /(?:MSWin|Windows)/i ? '\\' : '/' );
 
-our $VERSION = '1.3.5';
+our $VERSION = '1.0.0';
 our @ISA     = qw(Apache::Session Web::Session::_common);
 
 sub populate {

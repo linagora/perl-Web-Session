@@ -7,7 +7,7 @@ use Apache::Session::Store::MySQL;
 
 # Only id and a_session are written: indexed fields are generated columns
 our @ISA     = qw(Apache::Session::Store::MySQL);
-our $VERSION = '1.3.20';
+our $VERSION = '1.0.0';
 
 # DBD::MariaDB always uses utf8mb4. DBD::mysql only selects the connection
 # charset from attributes given to connect(): setting mysql_enable_utf8 on an
