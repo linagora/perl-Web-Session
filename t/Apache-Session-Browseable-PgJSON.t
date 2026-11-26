@@ -17,8 +17,11 @@ run_tests(
           . " ( ( cast(a_session ->> '_lastSeen' AS bigint) ) )",
         'CREATE INDEX __TABLE___rt1 ON __TABLE__'
           . " ( ( cast(a_session ->> '_oidcRtUpdate' AS bigint) ) )",
+        'CREATE INDEX __TABLE___gin ON __TABLE__'
+          . ' USING GIN (a_session jsonb_path_ops)',
     ],
-    null => 1,
+    gin   => 1,
+    null  => 1,
     json  => 1,
     weird => [ "weird'field", 'a"b\\c', 'a?b', 'x\\' ],
     scs   => 1,
