@@ -19,10 +19,30 @@ sub populate {
     $self->{lock_manager} = new Apache::Session::Lock::Null $self;
     $self->{generate}     = \&Apache::Session::Generate::SHA256::generate;
     $self->{validate}     = \&Apache::Session::Generate::SHA256::validate;
-    $self->{serialize}    = \&Apache::Session::Serialize::JSON::serialize;
+    $self->{serialize}    = \&Apache::Session::Serialize::JSON::serializeLatin1;
     $self->{unserialize}  = \&Apache::Session::Serialize::JSON::unserialize;
 
     return $self;
+}
+
+# Key name sent to Redis, see Store::Redis::keyName()
+sub _keyName {
+    return Apache::Session::Browseable::Store::Redis::keyName(@_);
+}
+
+# SCAN patterns for searchOnExpr(). The name of a set is Latin-1 unless it
+# holds characters above U+00FF, so a wildcard may stand for such characters
+# while the literal part is not ASCII: the UTF-8 form is then scanned too
+sub _exprPatterns {
+    my ( $field, $value ) = @_;
+    my $pattern = _exprPattern( $field, $value );
+    my @res     = ( _keyName($pattern) );
+    if ( $value =~ /\*/ ) {
+        my $p = $pattern;
+        utf8::encode($p);
+        push @res, $p unless ( $p eq $res[0] );
+    }
+    return @res;
 }
 
 sub unserialize {
@@ -118,7 +138,7 @@ sub searchOn {
     if ( $class->isIndexed( $args, $selectField ) ) {
 
         my $redisObj  = $class->_getRedis($args);
-        my $index_key = "${selectField}_$value";
+        my $index_key = _keyName("${selectField}_$value");
         my @keys      = eval { $redisObj->smembers($index_key) };
         if ($@) {
             die $@ unless ( $@ =~ /WRONGTYPE/ );
@@ -208,51 +228,54 @@ sub searchOnExpr {
     my $re = _exprRe($value);
     if ( $class->isIndexed( $args, $selectField ) ) {
         my $redisObj = $class->_getRedis($args);
-        my $cursor   = 0;
-        do {
-            my ( $new_cursor, $sets ) =
-              $redisObj->scan( $cursor,
-                MATCH => _exprPattern( $selectField, $value ),
-                COUNT => $SCAN_COUNT );
+        foreach my $pattern ( _exprPatterns( $selectField, $value ) ) {
+            my $cursor = 0;
+            do {
+                my ( $new_cursor, $sets ) =
+                  $redisObj->scan( $cursor,
+                    MATCH => $pattern,
+                    COUNT => $SCAN_COUNT );
 
-            # The sets of a SCAN page are read together: a few round trips
-            # instead of two per set. Members of another application are
-            # neither read nor removed
-            my $members = _smembers( $redisObj, $sets );
-            foreach my $set ( keys %$members ) {
-                $members->{$set} = [ grep { $_ and $class->isLlngKey( $args, $_ ) }
-                      @{ $members->{$set} } ];
-            }
-            my %seen;
-            my @keys = grep { !$seen{$_}++ } map { @$_ } values %$members;
-            my %values;
-            @values{@keys} = _mget( $redisObj, @keys );
-            foreach my $set ( keys %$members ) {
-                foreach my $k ( @{ $members->{$set} } ) {
-                    my $v = $values{$k};
-                    unless ($v) {
-                        # Lazy cleanup: remove orphan from index
-                        $class->_removeOrphan( $redisObj, $set, $k );
-                        next;
-                    }
-                    my $tmp = eval { unserialize($v) };
-                    if ( $@ or ref($tmp) ne 'HASH' ) {
-                        print STDERR "Error in session $k: "
-                          . ( $@ || "not a session\n" );
-                        next;
-                    }
-
-                    # The pattern may match sets of another field
-                    unless ( defined $tmp->{$selectField}
-                        and $tmp->{$selectField} =~ $re )
-                    {
-                        next;
-                    }
-                    $res{$k} = $class->extractFields( $tmp, @fields );
+                # The sets of a SCAN page are read together: a few round trips
+                # instead of two per set. Members of another application are
+                # neither read nor removed
+                my $members = _smembers( $redisObj, $sets );
+                foreach my $set ( keys %$members ) {
+                    $members->{$set} =
+                      [ grep { $_ and $class->isLlngKey( $args, $_ ) }
+                          @{ $members->{$set} } ];
                 }
-            }
-            $cursor = $new_cursor;
-        } while ( $cursor != 0 );
+                my %seen;
+                my @keys = grep { !$seen{$_}++ } map { @$_ } values %$members;
+                my %values;
+                @values{@keys} = _mget( $redisObj, @keys );
+                foreach my $set ( keys %$members ) {
+                    foreach my $k ( @{ $members->{$set} } ) {
+                        my $v = $values{$k};
+                        unless ($v) {
+                            # Lazy cleanup: remove orphan from index
+                            $class->_removeOrphan( $redisObj, $set, $k );
+                            next;
+                        }
+                        my $tmp = eval { unserialize($v) };
+                        if ( $@ or ref($tmp) ne 'HASH' ) {
+                            print STDERR "Error in session $k: "
+                              . ( $@ || "not a session\n" );
+                            next;
+                        }
+
+                        # The pattern may match sets of another field
+                        unless ( defined $tmp->{$selectField}
+                            and $tmp->{$selectField} =~ $re )
+                        {
+                            next;
+                        }
+                        $res{$k} = $class->extractFields( $tmp, @fields );
+                    }
+                }
+                $cursor = $new_cursor;
+            } while ( $cursor != 0 );
+        }
     }
     else {
         $class->get_key_from_all_sessions(
@@ -354,7 +377,7 @@ sub _searchCompare {
                 unless ($v) {
 
                     # Lazy cleanup: remove orphan from index
-                    eval { $redisObj->srem( $set, $k ) };
+                    $class->_removeOrphan( $redisObj, $set, $k );
                     next;
                 }
                 my $tmp = eval { unserialize($v) };
@@ -427,7 +450,7 @@ sub deleteIfLowerThan {
                 foreach my $i (@$index) {
                     my $t = $v->{$i};
                     next unless ( defined($t) and length($t) > 0 );
-                    eval { $redisObj->srem( "${i}_$t", $k ) };
+                    eval { $redisObj->srem( _keyName("${i}_$t"), $k ) };
                     if ($@) {
                         warn "Failed to remove '$k' from index '${i}_$t': $@";
                         $index_ok = 0;
@@ -650,6 +673,16 @@ them:
   }
 
 This also refreshes their C<TTL>, if any.
+
+=head1 CHARACTERS ABOVE U+00FF
+
+Redis clients refuse characters above U+00FF. Sessions are stored as JSON
+where such characters (and only them) are written as C<\uXXXX> escapes, so
+they are supported: the stored value is the same as before for a session
+holding only Latin-1 characters. Index set names (C<field_value>) are sent as
+Latin-1 bytes when they can be, so existing sets keep working, and as UTF-8
+bytes otherwise. The name of a value above U+00FF may then be the same as the
+Latin-1 name of another value (C<uid_\x{3a9}> and C<uid_\x{ce}\x{a9}>).
 
 =head1 SEE ALSO
 
