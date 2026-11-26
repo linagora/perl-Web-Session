@@ -14,8 +14,8 @@ Release:        1%{?dist}
 Summary:        Add index and search methods to Apache::Session
 Group:          Applications/System
 License:        GPL+ or Artistic
-URL:            http://search.cpan.org/dist/Web-Session/
-Source0:        http://search.cpan.org/CPAN/authors/id/G/GU/GUIMARD/%{real_name}-%{real_version}.tar.gz
+URL:            https://metacpan.org/dist/Web-Session/
+Source0:        https://cpan.metacpan.org/authors/id/G/GU/GUIMARD/%{real_name}-%{real_version}.tar.gz
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}
 BuildArch:      noarch
 
