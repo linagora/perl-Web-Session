@@ -95,6 +95,39 @@ is( join( ',', sort map { $rev{$_} } keys %$res ),
 $res = $class->searchOn( $args, 'uid', "O'Brien" );
 is( join( ',', keys %$res ),
     $ids->{obrien}, 'searchOn with a quote on an indexed field' );
+# Caller data must not be modified
+$ids = reset_sessions( obrien => { uid => "O'Brien", _utime => 100 } );
+my $fields = [ 'uid', '_utime' ];
+$res = $class->get_key_from_all_sessions( $args, $fields );
+is( $res->{ $ids->{obrien} }->{uid},
+    "O'Brien", 'get_key_from_all_sessions with indexed fields' );
+is_deeply( $fields, [ 'uid', '_utime' ], 'Fields list not modified' );
+
+my $qargs = { %$args, Index => [ 'uid', "a'b" ] };
+$fields = [ 'uid', "a'b" ];
+quiet {
+    eval { $class->get_key_from_all_sessions( $qargs, $fields ) }
+};
+is_deeply(
+    $fields,
+    [ 'uid', "a'b" ],
+    'Fields list not modified (field containing a quote)'
+);
+
+require Apache::Session::Browseable::Store::SQLite;
+my $store = Apache::Session::Browseable::Store::SQLite->new;
+quiet {
+    eval {
+        $store->insert(
+            {
+                args       => $qargs,
+                data       => { _session_id => 'x' },
+                serialized => '{}'
+            }
+        );
+    }
+};
+is_deeply( $qargs->{Index}, [ 'uid', "a'b" ], 'Store: Index not modified' );
 
 done_testing();
 
