@@ -63,18 +63,9 @@ sub _query {
       $dbh->prepare("SELECT $fields from $table_name where $query->{query}");
     $sth->execute( @{ $query->{values} } );
 
-    # In this case, PostgreSQL change field name in lowercase
+    # MySQL keeps the case of column aliases
     my $res = $sth->fetchall_hashref('id') or return {};
-    if (@fields) {
-        foreach (@fields) {
-            if ( $_ ne lc($_) ) {
-                foreach my $s ( keys %$res ) {
-                    $res->{$s}->{$_} = delete $res->{$s}->{ lc $_ };
-                }
-            }
-        }
-    }
-    else {
+    unless (@fields) {
         my $self = eval "&${class}::populate();";
         my $sub  = $self->{unserialize};
         foreach my $s ( keys %$res ) {
