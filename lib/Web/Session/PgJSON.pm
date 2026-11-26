@@ -548,14 +548,14 @@ default.
 =back
 
 On these connections each statement is its own transaction (C<AutoCommit>
-on): no session is locked, and a tie writes once, so a transaction protected
-nothing. A new session is written once, with its data, when it is untied
-(instead of an empty C<INSERT> at C<tie> then an C<UPDATE>). A connection
-that met an error (for example a write on the former primary after a
-failover) is closed, never lent again. A connection given back recently is
-lent without a round trip; an older one is checked with C<ping()>.
-Connections are opened with C<AutoInactiveDestroy>: a child created by
-C<fork()> neither uses nor closes the connections of its parent.
+on): no session is locked, so a transaction around a tie protected nothing.
+A connection that met an error (for example a write on the former primary
+after a failover) is closed, never lent again. Expired idle connections are
+closed when another connection is given back. A connection given back
+recently is lent without a round trip; an older one is checked with
+C<ping()>. Connections are opened with C<AutoInactiveDestroy>: a child
+created by C<fork()> neither uses nor closes the connections of its parent,
+even one that was lent when it forked.
 
 Example with Lemonldap::NG:
 

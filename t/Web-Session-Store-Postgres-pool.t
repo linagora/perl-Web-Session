@@ -11,7 +11,7 @@ plan skip_all => 'DBI and Apache::Session are needed for this test'
 {
 
     package FakeDbh;
-    our ( @connects, @sql, $disconnects );
+    our ( @connects, @sql, $disconnects, $pings );
 
     sub new {
         my ( $class, %attr ) = @_;
@@ -23,7 +23,11 @@ plan skip_all => 'DBI and Apache::Session are needed for this test'
             %attr,
         }, $class;
     }
-    sub ping { $_[0]->{alive} }
+
+    sub ping {
+        $pings++;
+        return $_[0]->{alive};
+    }
 
     sub disconnect {
         $_[0]->{Active} = 0;
@@ -37,9 +41,15 @@ plan skip_all => 'DBI and Apache::Session are needed for this test'
         return qq{"$name"};
     }
 
+    # Statement handles inherit HandleError, as with DBI
     sub prepare_cached {
         my ( $self, $sql ) = @_;
-        return bless { sql => $sql, dbh => $self }, 'FakeSth';
+        return bless {
+            sql         => $sql,
+            Type        => 'st',
+            Database    => $self,
+            HandleError => $self->{HandleError},
+        }, 'FakeSth';
     }
     *prepare = \&prepare_cached;
     sub commit   { 1 }
@@ -48,9 +58,16 @@ plan skip_all => 'DBI and Apache::Session are needed for this test'
     package FakeSth;
     sub bind_param { 1 }
 
+    # A statement fails if its connection has "fail" set
     sub execute {
         my ($self) = @_;
         push @FakeDbh::sql, $self->{sql};
+        if ( $self->{Database}->{fail} ) {
+            my $err = 'cannot execute UPDATE in a read-only transaction';
+            $self->{HandleError}->( $err, $self, undef )
+              if ( $self->{HandleError} );
+            die "$err\n";
+        }
         return 1;
     }
     sub fetchrow_arrayref { ['{}'] }
@@ -81,7 +98,8 @@ my %base = (
     Commit          => 1,
     KeepConnections => 1,
 );
-my $n = 0;
+my $key = "$base{DataSource}\0u";
+my $n   = 0;
 
 sub session {
     my %args = ( %base, @_ );
@@ -97,12 +115,11 @@ sub reset_pool {
     @FakeDbh::connects                    = ();
     @FakeDbh::sql                         = ();
     $FakeDbh::disconnects                 = 0;
+    $FakeDbh::pings                       = 0;
 }
 
-sub idle {
-    return scalar @{ $Web::Session::Store::Postgres::IDLE{"$base{DataSource}\0u"}
-          || [] };
-}
+sub pool { $Web::Session::Store::Postgres::IDLE{$key} || [] }
+sub idle { scalar @{ pool() } }
 
 # Connection attributes
 reset_pool();
@@ -115,7 +132,7 @@ reset_pool();
     ok( $attr->{RaiseError},          'Pooled connection: RaiseError' );
     is( ref( $attr->{HandleError} ), 'CODE', 'Pooled connection: HandleError' );
 }
-is( idle(), 1, 'Connection given back to the pool' );
+is( idle(),                1, 'Connection given back to the pool' );
 is( $FakeDbh::disconnects, 0, 'Connection not closed' );
 
 # Reused by the next store
@@ -124,6 +141,18 @@ is( $FakeDbh::disconnects, 0, 'Connection not closed' );
     $store->connection( session() );
     is( scalar @FakeDbh::connects, 1, 'Idle connection reused' );
     is( idle(),                    0, 'Lent: no longer idle' );
+}
+
+# A session is written at once, as without the pool
+reset_pool();
+{
+    my $store = $class->new;
+    my $s     = session();
+    $store->insert($s);
+    is( scalar @FakeDbh::sql, 1, 'insert() writes at once' );
+    like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'It is an INSERT' );
+    $store->update($s);
+    like( $FakeDbh::sql[1], qr/^UPDATE/, 'update() updates' );
 }
 
 # Two stores at once never share a connection
@@ -145,15 +174,16 @@ reset_pool();
 is( idle(),                1, 'MaxIdle: one connection kept' );
 is( $FakeDbh::disconnects, 2, 'MaxIdle: the others closed' );
 
-# A connection that met an error is closed
+# A connection whose statement failed is closed: HandleError, inherited by
+# the statement handle, flags it
 reset_pool();
 {
     my $store = $class->new;
-    $store->connection( session() );
-
-    # An error of a statement flags its connection
-    Web::Session::Store::Postgres::_flagError( 'read-only transaction',
-        bless { Type => 'st', Database => $store->{dbh} }, 'FakeSth' );
+    my $s     = session();
+    $store->connection($s);
+    $store->{dbh}->{fail} = 1;
+    ok( !eval { $store->insert($s); 1 }, 'Failed statement dies' );
+    ok( $store->{dbh}->{private_ws_error}, 'Its connection is flagged' );
 }
 is( idle(),                0, 'Error: connection not kept' );
 is( $FakeDbh::disconnects, 1, 'Error: connection closed' );
@@ -163,13 +193,44 @@ reset_pool();
 {
     my $store = $class->new;
     $store->connection( session() );
+    $store->{dbh}->{private_ws_error} = 1;
+    push @{ pool() }, [ $store->{dbh}, time ];
+    delete $store->{pool_key};
+    delete $store->{dbh};
 }
 {
     my $store = $class->new;
     $store->connection( session() );
     ok( !$store->{dbh}->{private_ws_error}, 'Error flag reset when lent' );
 }
-is( idle(), 1, 'Connection without error kept' );
+
+# A connection given back lately is lent without ping if its socket has
+# nothing to read, pinged otherwise
+reset_pool();
+pipe( my $r, my $w ) or die $!;
+{
+    my $store = $class->new;
+    $store->connection( session() );
+    $store->{dbh}->{pg_socket} = fileno($r);
+}
+{
+    my $store = $class->new;
+    $store->connection( session() );
+    is( $FakeDbh::pings, 0, 'Recent connection, empty socket: no ping' );
+}
+syswrite( $w, 'x' );
+{
+    my $store = $class->new;
+    $store->connection( session() );
+    is( $FakeDbh::pings, 1, 'Readable socket: pinged' );
+}
+pool()->[0]->[1] -= 60;
+sysread( $r, my $buf, 1 );
+{
+    my $store = $class->new;
+    $store->connection( session() );
+    is( $FakeDbh::pings, 2, 'Connection idle for a while: pinged' );
+}
 
 # Dead connection replaced
 reset_pool();
@@ -177,9 +238,8 @@ reset_pool();
     my $store = $class->new;
     $store->connection( session() );
 }
-$Web::Session::Store::Postgres::IDLE{"$base{DataSource}\0u"}->[0]->[0]->{alive}
-  = 0;
-$Web::Session::Store::Postgres::IDLE{"$base{DataSource}\0u"}->[0]->[2] -= 60;
+pool()->[0]->[0]->{alive} = 0;
+pool()->[0]->[1] -= 60;
 {
     my $store = $class->new;
     $store->connection( session() );
@@ -193,18 +253,30 @@ reset_pool();
     my $store = $class->new;
     $store->connection( session() );
 }
+pool()->[0]->[1] -= 200;
 {
-    my $entry = $Web::Session::Store::Postgres::IDLE{"$base{DataSource}\0u"}->[0];
-    $entry->[2] -= 200;
-    my $pinged = 0;
-    no warnings 'redefine';
-    local *FakeDbh::ping = sub { $pinged++; 1 };
     my $store = $class->new;
     $store->connection( session( IdleTimeout => 100 ) );
     is( scalar @FakeDbh::connects, 2, 'IdleTimeout: new connection' );
-    is( $pinged,                   0, 'IdleTimeout: old one not pinged' );
+    is( $FakeDbh::pings,           0, 'IdleTimeout: old one not pinged' );
     is( $FakeDbh::disconnects,     1, 'IdleTimeout: old one closed' );
 }
+
+# Expired idle connections are closed when a connection is given back, even
+# if they were never reached
+reset_pool();
+{
+    my @stores = map { $class->new } 1 .. 2;
+    $_->connection( session() ) foreach (@stores);
+}
+is( idle(), 2, 'Two idle connections' );
+pool()->[0]->[1] -= 200;
+{
+    my $store = $class->new;
+    $store->connection( session( IdleTimeout => 100 ) );
+}
+is( idle(),                1, 'Expired idle connection reaped at give back' );
+is( $FakeDbh::disconnects, 1, 'Expired idle connection closed' );
 
 # MaxLifetime
 reset_pool();
@@ -216,13 +288,14 @@ reset_pool();
 is( idle(),                0, 'MaxLifetime: old connection not kept' );
 is( $FakeDbh::disconnects, 1, 'MaxLifetime: old connection closed' );
 
-# Inherited from a parent process: neither used nor closed
+# Inherited from a parent process (idle when it forked): neither used nor
+# closed
 reset_pool();
 {
     my $store = $class->new;
     $store->connection( session() );
 }
-$Web::Session::Store::Postgres::IDLE{"$base{DataSource}\0u"}->[0]->[1] = -1;
+pool()->[0]->[0]->{private_ws_pid} = -1;
 {
     my $store = $class->new;
     $store->connection( session() );
@@ -230,36 +303,18 @@ $Web::Session::Store::Postgres::IDLE{"$base{DataSource}\0u"}->[0]->[1] = -1;
     is( $FakeDbh::disconnects,     0, 'Fork: parent connection not closed' );
 }
 
-# A new session is written once, at untie
+# Lent when the process forked: neither given back nor closed by the child
 reset_pool();
 {
     my $store = $class->new;
-    my $s     = session();
-    $store->insert($s);
-    is( scalar @FakeDbh::sql, 0, 'insert() waits for the untie' );
-    $store->update($s);
-    is( scalar @FakeDbh::sql, 1, 'update() of a new session: one statement' );
-    like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'update() of a new session inserts' );
-    $store->update($s);
-    like( $FakeDbh::sql[1], qr/^UPDATE/, 'Next update() updates' );
+    $store->connection( session() );
+    $store->{dbh}->{private_ws_pid} = -1;
 }
-reset_pool();
-{
-    my $store = $class->new;
-    $store->insert( session() );
-}
-is( scalar @FakeDbh::sql, 1, 'New session untied without update: inserted' );
-like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'It is an INSERT' );
-reset_pool();
-{
-    my $store = $class->new;
-    my $s     = session();
-    $store->insert($s);
-    $store->remove($s);
-}
-is( scalar @FakeDbh::sql, 0, 'Created and removed in the same tie: no SQL' );
+is( idle(),                0, 'Fork: lent connection not given back' );
+is( $FakeDbh::disconnects, 0, 'Fork: lent connection not closed' );
 
-# Without KeepConnections, or without Commit, or with a Handle: no pool
+# Without KeepConnections, or without Commit, or with noreuse or a Handle:
+# no pool
 foreach (
     [ 'Without KeepConnections', KeepConnections => 0 ],
     [ 'Without Commit',          Commit          => 0 ],
@@ -269,22 +324,27 @@ foreach (
     reset_pool();
     {
         my $store = $class->new;
-        my $s     = session(@args);
-        $store->insert($s);
-        is( scalar @FakeDbh::sql, 1, "$label: insert() writes at once" );
+        $store->insert( session(@args) );
         ok( !$FakeDbh::connects[0]->[1]->{AutoCommit},
             "$label: AutoCommit off" );
-        is( $FakeDbh::connects[0]->[3], 'cached',
-            "$label: connection reuse of the other stores" );
+        is( $FakeDbh::connects[0]->[3],
+            'cached', "$label: connection reuse of the other stores" );
     }
     is( idle(), 0, "$label: nothing in the pool" );
 }
 reset_pool();
 {
+    my $store = $class->new;
+    $store->insert( session( noreuse => 1 ) );
+    ok( !$FakeDbh::connects[0]->[3], 'noreuse: own connection' );
+}
+is( idle(), 0, 'noreuse: nothing in the pool' );
+reset_pool();
+{
     my $dbh   = FakeDbh->new( AutoCommit => 0 );
     my $store = $class->new;
     $store->insert( session( Handle => $dbh ) );
-    is( $store->{dbh},              $dbh, 'Handle: used as is' );
+    is( $store->{dbh},             $dbh, 'Handle: used as is' );
     is( scalar @FakeDbh::connects, 0,    'Handle: no connection opened' );
 }
 is( idle(), 0, 'Handle: nothing in the pool' );

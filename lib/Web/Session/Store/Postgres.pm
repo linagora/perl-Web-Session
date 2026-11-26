@@ -14,17 +14,14 @@ our $VERSION = '1.0.0';
 # (DataSource + UserName), lent to one store at a time: two sessions tied
 # together (a session and its persistent session) never share a connection,
 # so never a transaction. Used only when KeepConnections and Commit are set,
-# noreuse isn't and no Handle is given; otherwise connection() is the one of the other
-# stores (see _connection() in Store/DBI.pm).
+# noreuse isn't and no Handle is given; otherwise connection() is the one of
+# the other stores (see _connection() in Store/DBI.pm).
 #
 # On that path each statement is its own transaction (AutoCommit): the store
 # reads without a lock (Apache::Session::Store::DBI's materialize, no FOR
-# UPDATE; the lock manager is Null), and a tie writes once, so a transaction
-# around it protected nothing and cost a BEGIN and a COMMIT round trip each.
-# That once: Apache::Session's TIEHASH inserts a new session at once, then
-# its untie updates it with its data; here the insert waits for the untie and
-# writes the data then, a single INSERT.
-our %IDLE;    # "datasource\0user" => [ [ $dbh, $pid, $since ], ... ]
+# UPDATE; the lock manager is Null), so a transaction around a tie protected
+# nothing and cost a BEGIN and a COMMIT round trip each.
+our %IDLE;    # "datasource\0user" => [ [ $dbh, $since ], ... ]
 
 # Defaults of the MaxIdle, IdleTimeout and MaxLifetime arguments
 our $MAX_IDLE     = 4;       # idle connections kept per data source
@@ -59,6 +56,13 @@ sub _usable {
         return 1 if ( defined $ready and $ready == 0 );
     }
     return eval { $handle->ping } ? 1 : 0;
+}
+
+# Whether an idle connection given back at $since is expired
+sub _expired {
+    my ( $handle, $since, $now, $idleTimeout, $maxLifetime ) = @_;
+    return ( $now - $since > $idleTimeout
+          or $now - $handle->{private_ws_born} > $maxLifetime );
 }
 
 # HandleError of pooled connections (inherited by their statement handles):
@@ -102,16 +106,15 @@ sub connection {
     my $now         = time;
     my $dbh;
     while ( my $idle = pop @{ $IDLE{$key} ||= [] } ) {
-        my ( $handle, $pid, $since ) = @$idle;
+        my ( $handle, $since ) = @$idle;
 
         # Inherited from the parent before a fork: its socket is the parent's.
         # AutoInactiveDestroy keeps this process from closing it
-        next if ( $pid != $$ );
+        next if ( $handle->{private_ws_pid} != $$ );
 
         # Idle for too long, a NAT or load balancer may have dropped it: a
         # ping could then wait for the TCP timeout. Closed without a ping
-        if (   $now - $since > $idleTimeout
-            or $now - $handle->{private_ws_born} > $maxLifetime
+        if ( _expired( $handle, $since, $now, $idleTimeout, $maxLifetime )
             or !_usable( $handle, $since ) )
         {
             eval { $handle->disconnect };
@@ -133,74 +136,58 @@ sub connection {
             }
         ) || die $DBI::errstr;
         $dbh->{private_ws_born} = time;
+        $dbh->{private_ws_pid}  = $$;
         $dbh->{pg_enable_utf8}  = 1;
     }
     $dbh->{private_ws_error} = 0;
     $self->{dbh}          = $dbh;
     $self->{pool_key}     = $key;
     $self->{pool_maxidle} = _intArg( $args, 'MaxIdle', $MAX_IDLE );
+    $self->{pool_idle}    = $idleTimeout;
     $self->{pool_maxlife} = $maxLifetime;
     $self->{commit}       = $args->{Commit};
     $self->{disconnect}   = 0;
-}
-
-# A new session: its insert waits for the untie (the update that follows), so
-# that it is written once, with its data
-sub insert {
-    my ( $self, $session ) = @_;
-    $self->connection($session);
-    return $self->SUPER::insert($session) unless defined $self->{pool_key};
-
-    # What the insert needs, copied: keeping $session would be a cycle (it
-    # holds this store), and neither would ever be destroyed
-    $self->{pending_insert} = {
-        data       => { %{ $session->{data} } },
-        serialized => $session->{serialized},
-        args       => $session->{args},
-    };
-    return 1;
-}
-
-sub update {
-    my ( $self, $session ) = @_;
-    return $self->SUPER::insert($session) if delete $self->{pending_insert};
-    return $self->SUPER::update($session);
-}
-
-sub remove {
-    my ( $self, $session ) = @_;
-
-    # Created and removed in the same tie: nothing was written
-    return 1 if delete $self->{pending_insert};
-    return $self->SUPER::remove($session);
 }
 
 sub DESTROY {
     my $self = shift;
     my $key  = $self->{pool_key};
     return $self->SUPER::DESTROY(@_) unless defined $key;
-    my $dbh = $self->{dbh} or return;
+    my $dbh = delete $self->{dbh} or return;
 
-    # A new session untied without an update: inserted now, as it was tied
-    my $ok = 1;
-    if ( my $pending = delete $self->{pending_insert} ) {
-        local $@;
-        $ok = eval { $self->SUPER::insert($pending); 1 };
-        print STDERR "Unable to store the new session: $@" unless $ok;
-    }
-    delete $self->{dbh};
+    # End of the program: the handles may already be freed, DBI closes them
+    return if ( ${^GLOBAL_PHASE} eq 'DESTRUCT' );
+
+    # Lent when the process forked: the connection belongs to the parent.
+    # Neither given back nor closed here (AutoInactiveDestroy)
+    return if ( $dbh->{private_ws_pid} != $$ );
 
     # Each statement committed itself (AutoCommit): the connection goes back
-    # to the idle ones, unless it met an error, is too old, or the program
-    # ends
-    if (    $ok
-        and !$dbh->{private_ws_error}
+    # to the idle ones, unless it met an error or is too old. Expired idle
+    # connections (at the bottom of the stack, never reached when the pool
+    # stays busy) are closed now
+    my $now  = time;
+    my $idle = $IDLE{$key} ||= [];
+    @$idle = grep {
+        my ( $h, $since ) = @$_;
+        if ( $h->{private_ws_pid} != $$ ) { 0 }
+        elsif (
+            _expired(
+                $h, $since, $now, $self->{pool_idle}, $self->{pool_maxlife}
+            )
+          )
+        {
+            eval { $h->disconnect };
+            0;
+        }
+        else { 1 }
+    } @$idle;
+    if (    !$dbh->{private_ws_error}
         and $dbh->{Active}
-        and time - $dbh->{private_ws_born} <= $self->{pool_maxlife}
-        and ${^GLOBAL_PHASE} ne 'DESTRUCT'
-        and @{ $IDLE{$key} ||= [] } < $self->{pool_maxidle} )
+        and $now - $dbh->{private_ws_born} <= $self->{pool_maxlife}
+        and @$idle < $self->{pool_maxidle} )
     {
-        push @{ $IDLE{$key} }, [ $dbh, $$, time ];
+        push @$idle, [ $dbh, $now ];
         return;
     }
     local $@;
