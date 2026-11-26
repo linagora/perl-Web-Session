@@ -621,7 +621,7 @@ Options:
 Set C<KeepConnections =E<gt> 0> to disable the pool and get back the previous
 behaviour: the handle cached by DBI C<connect_cached()>, shared by the
 sessions of the process, with C<AutoCommit> off and a transaction committed at
-untie. The pool is enabled by default.
+untie. The pool is enabled by default, also when this option is empty.
 
 =item MaxIdle
 

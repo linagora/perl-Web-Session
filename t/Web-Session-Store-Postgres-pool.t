@@ -126,6 +126,7 @@ sub idle { scalar @{ pool() } }
 foreach (
     [ 'Default with Commit', () ],
     [ 'KeepConnections => 1', KeepConnections => 1 ],
+    [ "KeepConnections => ''", KeepConnections => '' ],
   )
 {
     my ( $label, @args ) = @$_;

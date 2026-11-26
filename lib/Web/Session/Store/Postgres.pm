@@ -90,7 +90,12 @@ sub connection {
     $self->_forgetInheritedHandle;
     return if defined $self->{dbh};
     my $args = $session->{args};
-    unless ( ( $args->{KeepConnections} // 1 )
+    # KeepConnections is on unless explicitly disabled: a missing or empty
+    # value (configuration interfaces may store an empty option as '') keeps
+    # the default
+    my $keep = $args->{KeepConnections};
+    $keep = 1 unless ( defined $keep and $keep ne '' );
+    unless ( $keep
         and $args->{Commit}
         and !$args->{noreuse}
         and !exists $args->{Handle} )
