@@ -737,9 +737,10 @@ Add C<KeepConnections =E<gt> 0> to these options to get back the shared
 C<connect_cached()> handle, or C<noreuse =E<gt> 1> to open and close a
 connection for each session.
 
-L<Web::Session::Patroni> has its own connection management and doesn't use
-this pool, neither for sessions nor for class methods: its class methods
-keep the C<connect_cached()> handle.
+L<Web::Session::Patroni> sessions use this pool too, keyed by the DSN of the
+primary node found through the Patroni API, see "Connection pool" in
+L<Web::Session::Patroni>. Its class methods don't: they keep the
+C<connect_cached()> handle.
 
 =head1 POSTGRESQL TUNING
 

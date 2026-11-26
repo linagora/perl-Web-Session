@@ -153,11 +153,12 @@ untie %session;
 # 8. Each store keeps the attributes of its own connections. The second
 # column marks the stores whose materialize() fails here (the session was
 # rolled back, or the query isn't SQLite's), which provides a failure. The
-# third one gives other arguments: the Postgres store uses its connection
-# pool by default (see 9.), KeepConnections => 0 gives back connect_cached()
+# third one gives other arguments: the Postgres and Patroni stores use the
+# connection pool by default (see 9.), KeepConnections => 0 gives back
+# connect_cached()
 my %stores = (
     Postgres  => [ 0, 1, { KeepConnections => 0 } ],
-    Patroni   => [ 0, 0 ],
+    Patroni   => [ 0, 0, { KeepConnections => 0 } ],
     SQLite    => [ 0, 0 ],
     MySQL     => [ 1, 0 ],
     Cassandra => [ 1, 1 ],
@@ -252,6 +253,38 @@ foreach my $name ( sort keys %stores ) {
     undef $s1;
     ok( !$stored->($sid3), 'Postgres without Commit: rolled back' );
     ok( $canWrite->(), 'Postgres without Commit: no transaction left open' );
+}
+
+# 10. The Patroni store uses the same pool, Commit being set by default (no
+# Patroni API call here: the connection doesn't fail)
+{
+    my $store   = 'Web::Session::Store::Patroni';
+    my $session = sub {
+        my ( $sid, %a ) = @_;
+        return {
+            args       => { DataSource  => $dsn, %a },
+            data       => { _session_id => $sid },
+            serialized => '{}',
+        };
+    };
+    my ( $s1, $s2 ) = ( $store->new, $store->new );
+    my ( $sid1, $sid2 ) = ( 'patroni-pool-' . $n++, 'patroni-pool-' . $n++ );
+    $s1->insert( $session->($sid1) );
+    $s2->insert( $session->($sid2) );
+    my ( $d1, $d2 ) = ( $s1->{dbh}, $s2->{dbh} );
+    ok( defined $s1->{pool_key}, 'Patroni: pool used by default' );
+    ok( $d1->{AutoCommit},       'Patroni pool: AutoCommit on' );
+    isnt( refaddr($d1), refaddr($d2),
+        'Patroni pool: two stores at once, two connections' );
+    ok( $stored->($sid1), 'Patroni pool: written at once' );
+    undef $s2;
+    undef $s1;
+    ok( $d1->{Active}, 'Patroni pool: connection kept' );
+    ok( $canWrite->(), 'Patroni pool: no transaction left open' );
+    $s1 = $store->new;
+    $s1->connection( $session->($sid1) );
+    is( refaddr( $s1->{dbh} ), refaddr($d1), 'Patroni pool: handle reused' );
+    undef $s1;
 }
 
 done_testing();

@@ -5,6 +5,7 @@ use strict;
 use DBI;
 use Apache::Session::Store::Postgres;
 use Web::Session::Store::DBI;
+use Web::Session::Store::Postgres;
 
 our @ISA     = qw(Apache::Session::Store::Postgres);
 our $VERSION = '1.0.0';
@@ -32,9 +33,12 @@ sub connection {
         return;
     }
 
-    # Store original DataSource as cache key
-    my $originalDataSource = $session->{args}->{DataSource};
-    $self->{_originalDataSource} = $originalDataSource;
+    # Store original DataSource as cache key. Kept when _try() reconnects:
+    # $session->{args}->{DataSource} then holds the DSN of the failed
+    # primary, and the new leader must be cached under the original key, the
+    # one that the next sessions read
+    my $originalDataSource = $self->{_originalDataSource} //=
+      $session->{args}->{DataSource};
 
     # Use cached leader if available and not expired
     my $cache    = $patroniCache{$originalDataSource}  || {};
@@ -47,6 +51,15 @@ sub connection {
         $session->{args}->{DataSource} =
           _buildDataSource( $originalDataSource, $cache->{leader} );
     }
+
+    #the programmer has to tell us what commit policy to use
+    my $commit = $session->{args}->{Commit} // 1;
+
+    # Connection pool of the Postgres store (see Store/Postgres.pm), keyed by
+    # the DSN of the primary in use
+    return $self->_pooledPrimary( $session->{args}, $commit )
+      if ( Web::Session::Store::Postgres::_poolApplies( $session->{args},
+            $commit ) );
 
     # AutoCommit off, as Postgres: see "Why AutoCommit differs" in Store/DBI.pm
     my $reused;
@@ -80,16 +93,57 @@ sub connection {
     #If we open the connection, we close the connection
     $self->{disconnect} = $reused ? 0 : 1;
 
-    #the programmer has to tell us what commit policy to use
-    $self->{commit} = $session->{args}->{Commit} // 1;
+    $self->{commit} = $commit;
+}
+
+# connection() with the pool: a connection to the primary is borrowed from
+# the pool of its DSN (the one in $args->{DataSource}, resolved from the
+# leader cache or by checkMaster()), with the retry of connection().
+#
+# Keyed by the DSN of the primary, the pool never lends a connection to a
+# former primary once the leader changed: such a connection may still answer
+# ping() (a node demoted behind a proxy) or hang until a TCP timeout (an
+# isolated node), and every write would fail. The failover is detected as
+# without the pool: a statement that fails (a write on a demoted node, or a
+# connection error) makes _try() give the connection back (flagged by
+# HandleError, it is closed) and retry with a new primary found by
+# checkMaster(). When the DSN changes, the idle connections to the former one
+# are closed at once instead of waiting for IdleTimeout.
+sub _pooledPrimary {
+    my ( $self, $args, $commit ) = @_;
+    foreach ( 0 .. 1 ) {
+        if ( $self->{failure} ) {
+            my $failed = Web::Session::Store::Postgres::_poolKey(
+                @{$args}{qw(DataSource UserName)} );
+            $self->checkMaster($args) or warn "Patroni check failed";
+            Web::Session::Store::Postgres::_dropIdle($failed)
+              if ( $failed ne Web::Session::Store::Postgres::_poolKey(
+                    @{$args}{qw(DataSource UserName)} ) );
+        }
+        eval {
+            $self->Web::Session::Store::Postgres::_pooledConnection(
+                @{$args}{qw(DataSource UserName Password)}, $args );
+        };
+        if ( $@ and !$_ ) {
+            $self->{failure} = 1;
+        }
+        else {
+            last;
+        }
+    }
+    die $@ if $@;
+    $self->{commit} = $commit;
 }
 
 # Apache::Session::Store::Postgres::DESTROY() commits: not in a child
 # created by fork() on the parent's handle (see _forgetInheritedHandle() in
-# Store/DBI.pm)
+# Store/DBI.pm). A pooled connection is given back instead: each statement
+# committed itself
 sub DESTROY {
     my $self = shift;
     return if ( Web::Session::Store::DBI::_forgetInheritedHandle($self) );
+    return $self->Web::Session::Store::Postgres::_giveBack
+      if ( defined $self->{pool_key} );
     $self->SUPER::DESTROY(@_);
 }
 

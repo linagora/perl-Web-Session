@@ -154,11 +154,35 @@ L<Apache::Session::Store::Postgres> does: the row stays locked until the
 transaction ends at untie, whether the save is skipped or not. Skipping it
 saves the write, not the lock.
 
-=head2 Persistent connection
+=head2 Connection pool
 
-The database connection is kept open between sessions. Set
-C<noreuse =E<gt> 1> to open and close one for each session, see
-L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">.
+Database connections are kept open between sessions. By default, sessions
+use the connection pool of L<Web::Session::PgJSON> (see "Connection pool
+(KeepConnections)" there, with its C<MaxIdle>, C<IdleTimeout> and
+C<MaxLifetime> options): each process keeps idle connections and lends each
+one to a single tied session at a time, each statement being its own
+transaction (C<AutoCommit> on).
+
+The pool is keyed by the DSN of the primary node in use (the C<DataSource>
+with the host and port of the leader found through the Patroni API) and the
+user. So after a failover, a connection to the former primary is never lent
+again: it could still answer C<ping()> (a demoted node) or hang until a TCP
+timeout (an isolated node), and every write would fail. The failover is
+detected as without the pool: a statement that fails closes its connection
+(the pool never lends again a connection that met an error), the Patroni API
+gives the new leader and the statement is retried on a connection to it. The
+idle connections to the former primary are then closed at once.
+
+The pool is not used with C<Commit =E<gt> 0> (this backend commits when
+C<Commit> isn't set), with C<KeepConnections =E<gt> 0>, with C<noreuse> or
+with a C<Handle>: sessions then use the handle shared by the sessions of the
+process (C<AutoCommit> off, a transaction committed at untie, see
+L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">), or with C<noreuse =E<gt> 1>
+a connection opened and closed for each session.
+
+Class methods (searchOn(), deleteIfLowerThan()...) don't use the pool: they
+use a connection to C<DataSource> as given, as in L<Web::Session::PgJSON>
+without the pool.
 
 =head2 Class methods
 
