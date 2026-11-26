@@ -29,7 +29,7 @@ sub populate {
 
 sub searchOn {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
-    my $dbh = $class->_classDbh($args);
+    my ( $dbh, $loan ) = $class->_borrowDbh($args);
     if ( $args->{GinIndex} and !$class->_jsonbColumn( $args, $dbh ) ) {
         $args = { %$args };
         delete $args->{GinIndex};
@@ -93,7 +93,8 @@ sub _searchOnQuery {
 sub _jsonbColumn {
     my ( $class, $args, $dbh ) = @_;
 
-    $dbh ||= $class->_classDbh($args);
+    my $loan;
+    ( $dbh, $loan ) = $class->_borrowDbh($args) unless ($dbh);
     my $table = $args->{TableName} || $Apache::Session::Store::DBI::TableName;
     my $cache = $dbh->{private_asb_pgjson_type} ||= {};
     unless ( defined $cache->{$table} ) {
@@ -147,8 +148,8 @@ sub _searchCompare {
 
 sub _query {
     my ( $class, $args, $query, @fields ) = @_;
-    return $class->_queryDbh( $class->_classDbh($args), $args, $query,
-        @fields );
+    my ( $dbh, $loan ) = $class->_borrowDbh($args);
+    return $class->_queryDbh( $dbh, $args, $query, @fields );
 }
 
 # Same as _query() with an already connected handle
@@ -156,7 +157,6 @@ sub _queryDbh {
     my ( $class, $dbh, $args, $query, @fields ) = @_;
     my %res = ();
 
-    my $dbh = $class->_classDbh($args);
     my $table_name =
       Web::Session::_common->_tableName( $dbh, $args );
 
@@ -221,13 +221,17 @@ sub deleteIfLowerThan {
 
     # Delete by batches: a single DELETE on hundreds of thousands of sessions
     # is one long transaction (WAL spike, locks held, replication lag). Each
-    # batch is its own statement (the class handle is AutoCommit). The WHERE
-    # expression is the same as before, so the expression indexes are still
-    # usable by the sub-select. Rows deleted by a concurrent purge are simply
-    # not counted.
+    # batch is its own statement (class methods' connections are AutoCommit).
+    # The WHERE expression is the same as before, so the expression indexes
+    # are still usable by the sub-select. Rows deleted by a concurrent purge
+    # are simply not counted.
     my $total = 0;
     my $ok    = eval {
-        my $dbh = $class->_classDbh($args);
+
+        # Held for all the batches. A pooled connection is given back when
+        # $loan goes out of scope, also when a batch dies (it is then closed:
+        # see _flagError() in Store/Postgres.pm)
+        my ( $dbh, $loan ) = $class->_borrowDbh($args);
         my $table_name =
           Web::Session::_common->_tableName( $dbh, $args );
         my $limit = Web::Session::_common->_batchSize;
@@ -270,7 +274,11 @@ sub _deleteBatchStatement {
 sub get_key_from_all_sessions {
     my ( $class, $args, $data ) = @_;
 
-    my $dbh = $class->_classDbh($args);
+    # Held until the end of the call, callbacks included: a callback that
+    # ties a session or calls a class method gets another connection of the
+    # pool, never this one (lent, it is not idle). $loan gives it back when
+    # this method returns or dies
+    my ( $dbh, $loan ) = $class->_borrowDbh($args);
     my $table_name =
       Web::Session::_common->_tableName( $dbh, $args );
     my $sth;
@@ -349,6 +357,32 @@ sub _sqlAlias {
     return qq{"$field"};
 }
 
+# Connection of a class method: returns ( $dbh, $loan ). Keep $loan until
+# the handle is no longer needed: when the connection pool of
+# Web::Session::Store::Postgres applies (see _classPool()), $dbh is lent by
+# the pool and given back when $loan is freed, so at the end of the call,
+# also when it dies. Otherwise $dbh is the handle of _classDbh() and $loan is
+# undef.
+sub _borrowDbh {
+    my ( $class, $args ) = @_;
+    return ( $class->_classDbh($args), undef )
+      unless ( $class->_classPool($args) );
+    $args->{DataSource} or die "No datasource given !";
+    my $loan = Web::Session::Store::Postgres->_lend($args);
+    return ( $loan->{dbh}, $loan );
+}
+
+# Whether class methods borrow their connection from the pool: with the
+# arguments that make sessions use it (see _poolApplies() in
+# Store/Postgres.pm). A subclass whose sessions don't use the pool overrides
+# it (Web::Session::Patroni)
+sub _classPool {
+    my ( $class, $args ) = @_;
+    return Web::Session::Store::Postgres::_poolApplies($args);
+}
+
+# Handle cached by DBI connect_cached(), used by class methods when the pool
+# doesn't apply (see _borrowDbh())
 sub _classDbh {
     my ( $class, $args ) = @_;
 
@@ -455,7 +489,8 @@ C<jsonb_path_ops> operator class exist only for "jsonb": with a "json"
 column, the index can't be created: C<GinIndex> is then ignored, with a
 warning, and searchOn() falls back to the query used without the option. The
 warning is emitted once per database handle (so once per process and
-connection) and table. To use the index, convert the column first:
+connection, also for each connection of the pool) and table. To use the
+index, convert the column first:
 
   ALTER TABLE sessions ALTER COLUMN a_session TYPE jsonb
     USING a_session::jsonb;
@@ -464,7 +499,8 @@ This rewrites the whole table under an C<ACCESS EXCLUSIVE> lock: sessions are
 blocked during the conversion. It fails if a session contains C<\u0000>
 (accepted by "json", refused by "jsonb"). The column type is cached per
 database handle and table: processes already connected must be restarted (or
-reconnect) after the conversion, else they keep ignoring C<GinIndex>.
+reconnect) after the conversion, else they keep ignoring C<GinIndex> (pooled
+connections are renewed after C<MaxLifetime>, see below).
 
 Results are the same as without C<GinIndex>:
 
@@ -584,6 +620,26 @@ C<MaxIdle> idle connections per data source (C<DataSource> and C<UserName>),
 and lends each one to a single tied session at a time. The pool is not used
 with C<Commit =E<gt> 0>, with C<noreuse> or with a C<Handle>.
 
+Class methods (searchOn(), searchOnExpr(), searchLt(), searchGt(),
+get_key_from_all_sessions() and deleteIfLowerThan()) called with the same
+arguments use the same pool: each call borrows a connection and gives it back
+when it returns. A process that uses both sessions and class methods (for
+example a Lemonldap::NG portal, whose C<SingleSession> feature calls
+searchOn(), or the sessions purge, which calls deleteIfLowerThan()) thus
+doesn't keep one more connection for the class methods. The rules of the
+pool apply to these connections too: a connection that met an error is
+closed, expired ones are renewed, a child process doesn't use those of its
+parent.
+
+A callback given to get_key_from_all_sessions() runs while the call holds its
+connection: if it ties a session or calls a class method, they get another
+connection of the pool (or open one), never the one of the running call. The
+connection is given back even if the query or the callback dies.
+
+Without the pool (no C<Commit>, C<KeepConnections =E<gt> 0> or C<noreuse>),
+class methods use the handle cached by DBI C<connect_cached()>, as before.
+They never use the C<Handle> argument.
+
 Why a pool rather than the DBI C<connect_cached()> handle used by the other
 SQL backends:
 
@@ -678,7 +734,8 @@ C<connect_cached()> handle, or C<noreuse =E<gt> 1> to open and close a
 connection for each session.
 
 L<Web::Session::Patroni> has its own connection management and doesn't use
-this pool.
+this pool, neither for sessions nor for class methods: its class methods
+keep the C<connect_cached()> handle.
 
 =head1 POSTGRESQL TUNING
 

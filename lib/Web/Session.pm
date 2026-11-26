@@ -45,8 +45,9 @@ same flags (C<pg_enable_utf8>, C<mysql_enable_utf8>, C<sqlite_unicode>).
 PostgreSQL backends (PgJSON and its Postgres alias, not Patroni) use a pool
 of connections instead, unless C<Commit> is set to 0: each connection is lent
 to one session at a time, so sessions tied together never share a
-transaction, with error handling, idle timeouts and fork safety. See
-"Connection pool (KeepConnections)" in L<Web::Session::PgJSON>;
+transaction, with error handling, idle timeouts and fork safety. Their class
+methods borrow connections of the same pool for the duration of each call.
+See "Connection pool (KeepConnections)" in L<Web::Session::PgJSON>;
 C<KeepConnections =E<gt> 0> gives back the C<connect_cached()> handle
 described here.
 
@@ -77,7 +78,8 @@ Things to know:
 Each process (Apache or FastCGI worker...) keeps its connection(s) open: size
 the maximum number of connections of the database server for the number of
 processes, or use C<noreuse>. With the PostgreSQL pool, a process keeps up to
-C<MaxIdle> idle connections, plus one for each session tied at the moment.
+C<MaxIdle> idle connections, plus one for each session tied and each class
+method running at the moment.
 
 =item *
 

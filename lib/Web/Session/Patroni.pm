@@ -24,6 +24,11 @@ sub populate {
     return $self;
 }
 
+# Sessions use Web::Session::Store::Patroni, which doesn't use the
+# connection pool of Web::Session::Store::Postgres: class methods keep the
+# handle of _classDbh() (DBI connect_cached())
+sub _classPool { 0 }
+
 1;
 __END__
 

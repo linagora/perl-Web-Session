@@ -173,6 +173,24 @@ sub run_tests {
         return $code->();
     };
 
+    # Whether class methods borrow their connection from the pool of the
+    # PostgreSQL store (Web::Session::PgJSON, see _borrowDbh())
+    my $classPool = sub {
+        return ( $class->can('_classPool') and $class->_classPool( $_[0] ) );
+    };
+
+    # Handle that the next class method call will use: the connect_cached()
+    # handle of _classDbh(), or with the pool, the connection it lends next
+    # (the last one given back: borrowed, then given back at once)
+    my $nextClassDbh = sub {
+        my ($a) = @_;
+        return $class->_classDbh($a) unless ( $classPool->($a) );
+        my $loan = Web::Session::Store::Postgres->_lend($a);
+        my $h    = $loan->{dbh};
+        undef $loan;
+        return $h;
+    };
+
     # Run a group of tests. If the group is a known bug of this backend, run
     # it as TODO: STDERR is silenced and a die is reported as a failure
     my $group = sub {
@@ -848,7 +866,7 @@ sub run_tests {
     {
         local $Web::Session::_common::BatchSize = 2;
         my $queries = 0;
-        my $cdbh    = $class->_classDbh($args);
+        my $cdbh    = $nextClassDbh->($args);
         local $cdbh->{Callbacks} =
           { ChildCallbacks => { execute => sub { $queries++; return } } };
         foreach my $n ( 4, 5 ) {
@@ -891,6 +909,50 @@ sub run_tests {
             $reset->();
         }
     );
+
+    # With the pool of the PostgreSQL store, class methods borrow one of its
+    # connections for the duration of the call: a callback of
+    # get_key_from_all_sessions() that ties a session or calls a class method
+    # gets another connection. Without it, they use connect_cached()
+    if ( exists $o{pool} ) {
+        my $cached        = 0;
+        my $connectCached = \&DBI::connect_cached;
+        no warnings 'redefine';
+        local *DBI::connect_cached = sub { $cached++; goto &$connectCached };
+        use warnings 'redefine';
+        my ( $tied, $found ) = ( 0, 0 );
+        my $res = $class->get_key_from_all_sessions(
+            $args,
+            sub {
+                my ( $s, $id ) = @_;
+                my %t;
+                tie %t, $class, $id, $args;
+                $tied++ if ( $t{uid} eq $s->{uid} );
+                untie %t;
+                $found++
+                  if ( $class->searchOn( $args, 'uid', $s->{uid} )->{$id} );
+                return 1;
+            }
+        );
+        my $n = scalar keys %$res;
+        is( $n, 4, 'class methods: sessions read' );
+        is( $tied, $n, 'class methods: session tied in a callback' );
+        is( $found, $n, 'class methods: class method called in a callback' );
+        is( $classPool->($args) ? 1 : 0, $o{pool} ? 1 : 0,
+            $o{pool} ? 'class methods: pool used' : 'class methods: no pool' );
+        is(
+            $cached ? 0 : 1,
+            $o{pool} ? 1 : 0,
+            $o{pool}
+            ? 'class methods: connect_cached() not used'
+            : 'class methods: connect_cached() used'
+        );
+        is_deeply(
+            [ $class->deleteIfLowerThan( $args, { or => { _utime => 0 } } ) ],
+            [ 1, 0 ],
+            'class methods: deleteIfLowerThan'
+        );
+    }
 
     # deleteIfLowerThan
     $group->(
@@ -1159,9 +1221,15 @@ sub run_tests {
     # PostgreSQL with standard_conforming_strings=off: backslashes are escape
     # characters in plain string literals
     if ( $o{scs} ) {
-        my $mdbh = $class->_classDbh($args);
-        $mdbh->do('SET standard_conforming_strings = off');
-        is( $mdbh->selectrow_array('SHOW standard_conforming_strings'),
+
+        # Set by libpq "options" for every connection to this DataSource:
+        # class methods may borrow a pooled connection (another one in a
+        # callback, a new one after an error), not a single handle that could
+        # be configured with SET
+        local $args->{DataSource} =
+          "$args->{DataSource};options=-cstandard_conforming_strings=off";
+        is( $nextClassDbh->($args)
+              ->selectrow_array('SHOW standard_conforming_strings'),
             'off', 'standard_conforming_strings is off for the module' );
         my %isWeird = map { $_ => 1 } @weird;
         my @names = ( @weird, grep { !$isWeird{$_} } "x\\' OR '1'='1", 'x\\' );
@@ -1218,10 +1286,11 @@ sub run_tests {
                 }
             );
         }
-        $mdbh->do('SET standard_conforming_strings = on');
-        is( $mdbh->selectrow_array('SHOW standard_conforming_strings'),
-            'on', 'standard_conforming_strings is back on' );
     }
+    is( $nextClassDbh->($args)
+          ->selectrow_array('SHOW standard_conforming_strings'),
+        'on', 'standard_conforming_strings is back on' )
+      if ( $o{scs} );
 
     # Identifiers are quoted: an indexed column named after a reserved word
     if ( my $w = $o{reserved} ) {
@@ -1306,9 +1375,14 @@ sub run_tests {
     if ( $o{gin} ) {
         $dbh->do("DELETE FROM $table");
 
-        # Force the GIN index to be used, even on this small table
-        my $mdbh = $class->_classDbh($args);
-        $mdbh->do('SET enable_seqscan = off');
+        # Force the GIN index to be used, even on this small table. Set by
+        # libpq "options" for every connection to this DataSource, so also on
+        # the connections that class methods borrow from the pool
+        local $args->{DataSource} =
+          "$args->{DataSource};options=-cenable_seqscan=off";
+        my $mdbh = $nextClassDbh->($args);
+        is( $mdbh->selectrow_array('SHOW enable_seqscan'),
+            'off', 'GinIndex: enable_seqscan is off for the module' );
         my $pi   = '3.14159265358979323846264338327950288419716939937510';
         my $big  = '1' . ( '0' x 131071 );
 
@@ -1418,7 +1492,6 @@ sub run_tests {
             is_deeply( $class->searchOn( $gargs, $w, $v, 'uid' ),
                 $off, "searchOn on field [$w] with GinIndex: same result" );
         }
-        $mdbh->do('RESET enable_seqscan');
     }
 
 

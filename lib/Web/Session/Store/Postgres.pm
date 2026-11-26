@@ -29,7 +29,12 @@ our $VERSION = '1.0.0';
 # reads without a lock (Apache::Session::Store::DBI's materialize, no FOR
 # UPDATE; the lock manager is Null), so a transaction around a tie protected
 # nothing and cost a BEGIN and a COMMIT round trip each.
-our %IDLE;    # "datasource\0user" => [ [ $dbh, $since ], ... ]
+#
+# With the same arguments, the class methods of Web::Session::PgJSON borrow
+# a connection of this pool for the duration of each call (see _lend()), so
+# that a process using both sessions and class methods doesn't keep one more
+# connection for the latter.
+our %IDLE;   # "datasource\0user" => [ [ $dbh, $since ], ... ]
 
 # Defaults of the MaxIdle, IdleTimeout and MaxLifetime arguments
 our $MAX_IDLE     = 4;       # idle connections kept per data source
@@ -97,31 +102,30 @@ sub _commit {
     return ( defined $commit and $commit ne '' ) ? $commit : 1;
 }
 
-sub connection {
-    my ( $self, $session ) = @_;
-    $self->_forgetInheritedHandle;
-    return if defined $self->{dbh};
-    my $args = $session->{args};
+# Whether the pool applies to these arguments: KeepConnections not disabled,
+# writes committed (see _commit()), no noreuse, no Handle. Shared by
+# connection() and by the class methods of Web::Session::PgJSON (see
+# _lend()), so that both stay consistent
+sub _poolApplies {
+    my ($args) = @_;
 
     # KeepConnections is on unless explicitly disabled: a missing or empty
     # value (configuration interfaces may store an empty option as '') keeps
     # the default
     my $keep = $args->{KeepConnections};
     $keep = 1 unless ( defined $keep and $keep ne '' );
-    unless ( $keep
-        and _commit($args)
-        and !$args->{noreuse}
-        and !exists $args->{Handle} )
-    {
-        # AutoCommit off: see "Why AutoCommit differs" in Store/DBI.pm
-        $self->_connection( $session, 'Apache::Session::Store::Postgres',
-            { RaiseError => 1, AutoCommit => 0 } );
-        $self->{dbh}->{pg_enable_utf8} = 1;
-        $self->{commit} = _commit($args);
-        return;
-    }
-    $self->{table_name} =
-      $args->{TableName} || $Apache::Session::Store::DBI::TableName;
+    return (  $keep
+          and _commit($args)
+          and !$args->{noreuse}
+          and !exists $args->{Handle} ) ? 1 : 0;
+}
+
+# Takes a connection of the pool of $args, an idle one if possible, a new one
+# otherwise. Lent means removed from the idle ones: a connection is never lent
+# twice at once. Returns the handle and what _giveBack() needs:
+# { dbh, pool_key, pool_maxidle, pool_idle, pool_maxlife }
+sub _borrow {
+    my ($args) = @_;
     my $datasource = $args->{DataSource}
       || $Apache::Session::Store::Postgres::DataSource;
     my $username = $args->{UserName}
@@ -168,21 +172,21 @@ sub connection {
         $dbh->{pg_enable_utf8}  = 1;
     }
     $dbh->{private_ws_error} = 0;
-    $self->{dbh}          = $dbh;
-    $self->{pool_key}     = $key;
-    $self->{pool_maxidle} = _intArg( $args, 'MaxIdle', $MAX_IDLE );
-    $self->{pool_idle}    = $idleTimeout;
-    $self->{pool_maxlife} = $maxLifetime;
-    $self->{commit}       = 1;
-    $self->{disconnect}   = 0;
+    return {
+        dbh          => $dbh,
+        pool_key     => $key,
+        pool_maxidle => _intArg( $args, 'MaxIdle', $MAX_IDLE ),
+        pool_idle    => $idleTimeout,
+        pool_maxlife => $maxLifetime,
+    };
 }
 
-sub DESTROY {
-    my $self = shift;
-    return if ( $self->_forgetInheritedHandle );
-    my $key = $self->{pool_key};
-    return $self->SUPER::DESTROY(@_) unless defined $key;
-    my $dbh = delete $self->{dbh} or return;
+# Gives back the connection $loan->{dbh} taken by _borrow(). $loan is a store
+# or a Web::Session::Store::Postgres::Loan
+sub _giveBack {
+    my ($loan) = @_;
+    my $key = $loan->{pool_key};
+    my $dbh = delete $loan->{dbh} or return;
     local $@;    # disconnect() below must not clear the caller's $@
 
     # End of the program: the handles may already be freed, DBI closes them
@@ -203,7 +207,7 @@ sub DESTROY {
         if ( $h->{private_ws_pid} != $$ ) { 0 }
         elsif (
             _expired(
-                $h, $since, $now, $self->{pool_idle}, $self->{pool_maxlife}
+                $h, $since, $now, $loan->{pool_idle}, $loan->{pool_maxlife}
             )
           )
         {
@@ -214,13 +218,58 @@ sub DESTROY {
     } @$idle;
     if (    !$dbh->{private_ws_error}
         and $dbh->{Active}
-        and $now - $dbh->{private_ws_born} <= $self->{pool_maxlife}
-        and @$idle < $self->{pool_maxidle} )
+        and $now - $dbh->{private_ws_born} <= $loan->{pool_maxlife}
+        and @$idle < $loan->{pool_maxidle} )
     {
         push @$idle, [ $dbh, $now ];
         return;
     }
     eval { $dbh->disconnect };
+}
+
+# A connection of the pool lent outside of a store, for the duration of a
+# class method of Web::Session::PgJSON (callers check _poolApplies() first).
+# Returns a Web::Session::Store::Postgres::Loan object holding the handle in
+# $loan->{dbh}, given back when the object is freed: when the method returns,
+# and also when a query or a callback dies, so a connection never leaks.
+sub _lend {
+    my ( $class, $args ) = @_;
+    return bless _borrow($args), 'Web::Session::Store::Postgres::Loan';
+}
+
+sub connection {
+    my ( $self, $session ) = @_;
+    $self->_forgetInheritedHandle;
+    return if defined $self->{dbh};
+    my $args = $session->{args};
+    unless ( _poolApplies($args) ) {
+
+        # AutoCommit off: see "Why AutoCommit differs" in Store/DBI.pm
+        $self->_connection( $session, 'Apache::Session::Store::Postgres',
+            { RaiseError => 1, AutoCommit => 0 } );
+        $self->{dbh}->{pg_enable_utf8} = 1;
+        $self->{commit} = _commit($args);
+        return;
+    }
+    $self->{table_name} =
+      $args->{TableName} || $Apache::Session::Store::DBI::TableName;
+    my $loan = _borrow($args);
+    $self->{$_}         = $loan->{$_} foreach ( keys %$loan );
+    $self->{commit}     = 1;
+    $self->{disconnect} = 0;
+}
+
+sub DESTROY {
+    my $self = shift;
+    return if ( $self->_forgetInheritedHandle );
+    return $self->SUPER::DESTROY(@_) unless defined $self->{pool_key};
+    _giveBack($self);
+}
+
+package Web::Session::Store::Postgres::Loan;
+
+sub DESTROY {
+    Web::Session::Store::Postgres::_giveBack( $_[0] );
 }
 
 1;
