@@ -154,6 +154,7 @@ sub DESTROY {
     my $key  = $self->{pool_key};
     return $self->SUPER::DESTROY(@_) unless defined $key;
     my $dbh = delete $self->{dbh} or return;
+    local $@;    # disconnect() below must not clear the caller's $@
 
     # End of the program: the handles may already be freed, DBI closes them
     return if ( ${^GLOBAL_PHASE} eq 'DESTRUCT' );
@@ -190,7 +191,6 @@ sub DESTROY {
         push @$idle, [ $dbh, $now ];
         return;
     }
-    local $@;
     eval { $dbh->disconnect };
 }
 
