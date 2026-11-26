@@ -1,11 +1,11 @@
 # Directly copied from LemonLDAP::NG project (http://lemonldap-ng.org/)
-package Apache::Session::Generate::SHA256;
+package Web::Session::Generate::SHA256;
 
 use strict;
 use vars qw($VERSION);
 use Crypt::URandom;
 
-$VERSION = '1.3.19';
+$VERSION = '1.0.0';
 
 sub generate {
     my $session = shift;

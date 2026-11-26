@@ -5,8 +5,8 @@ use strict;
 use Apache::Session;
 use Apache::Session::Lock::File;
 use Web::Session::Store::File;
-use Apache::Session::Generate::SHA256;
-use Apache::Session::Serialize::JSON;
+use Web::Session::Generate::SHA256;
+use Web::Session::Serialize::JSON;
 use Web::Session::_common;
 
 use constant SL => ( $^O and $^O =~ /(?:MSWin|Windows)/i ? '\\' : '/' );
@@ -19,10 +19,10 @@ sub populate {
 
     $self->{object_store} = new Web::Session::Store::File $self;
     $self->{lock_manager} = new Apache::Session::Lock::File $self;
-    $self->{generate}     = \&Apache::Session::Generate::SHA256::generate;
-    $self->{validate}     = \&Apache::Session::Generate::SHA256::validate;
-    $self->{serialize}    = \&Apache::Session::Serialize::JSON::serialize;
-    $self->{unserialize}  = \&Apache::Session::Serialize::JSON::unserialize;
+    $self->{generate}     = \&Web::Session::Generate::SHA256::generate;
+    $self->{validate}     = \&Web::Session::Generate::SHA256::validate;
+    $self->{serialize}    = \&Web::Session::Serialize::JSON::serialize;
+    $self->{unserialize}  = \&Web::Session::Serialize::JSON::unserialize;
 
     return $self;
 }
@@ -53,17 +53,17 @@ sub get_key_from_all_sessions {
             my $row = join '', <F>;
             if ( ref($data) eq 'CODE' ) {
                 $res{$f} =
-                  &$data( &Apache::Session::Serialize::JSON::_unserialize($row),
+                  &$data( &Web::Session::Serialize::JSON::_unserialize($row),
                     $f );
             }
             elsif ($data) {
                 $data = [$data] unless ( ref($data) );
-                my $tmp = &Apache::Session::Serialize::JSON::_unserialize($row);
+                my $tmp = &Web::Session::Serialize::JSON::_unserialize($row);
                 $res{$f}->{$_} = $tmp->{$_} foreach (@$data);
             }
             else {
                 $res{$f} =
-                  &Apache::Session::Serialize::JSON::_unserialize($row);
+                  &Web::Session::Serialize::JSON::_unserialize($row);
             }
         };
         if ($@) {

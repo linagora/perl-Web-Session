@@ -5,8 +5,8 @@ use strict;
 use Apache::Session;
 use Apache::Session::Lock::Null;
 use Web::Session::Store::LDAP;
-use Apache::Session::Generate::SHA256;
-use Apache::Session::Serialize::JSON;
+use Web::Session::Generate::SHA256;
+use Web::Session::Serialize::JSON;
 use Web::Session::_common;
 use Net::LDAP::Constant
   qw(LDAP_CONTROL_PAGED LDAP_NO_SUCH_OBJECT LDAP_ASSERTION_FAILED
@@ -28,10 +28,10 @@ sub populate {
 
     $self->{object_store} = new Web::Session::Store::LDAP $self;
     $self->{lock_manager} = new Apache::Session::Lock::Null $self;
-    $self->{generate}     = \&Apache::Session::Generate::SHA256::generate;
-    $self->{validate}     = \&Apache::Session::Generate::SHA256::validate;
-    $self->{serialize}    = \&Apache::Session::Serialize::JSON::serialize;
-    $self->{unserialize}  = \&Apache::Session::Serialize::JSON::unserialize;
+    $self->{generate}     = \&Web::Session::Generate::SHA256::generate;
+    $self->{validate}     = \&Web::Session::Generate::SHA256::validate;
+    $self->{serialize}    = \&Web::Session::Serialize::JSON::serialize;
+    $self->{unserialize}  = \&Web::Session::Serialize::JSON::unserialize;
 
     return $self;
 }
@@ -39,7 +39,7 @@ sub populate {
 sub unserialize {
     my $session = shift;
     my $tmp     = { serialized => $session };
-    Apache::Session::Serialize::JSON::unserialize($tmp);
+    Web::Session::Serialize::JSON::unserialize($tmp);
     return $tmp->{data};
 }
 

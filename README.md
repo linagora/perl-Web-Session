@@ -79,7 +79,7 @@ Web::Session::PgJSON->deleteIfLowerThan( $args,
   (see `perldoc Web::Session::Postgres` and `perldoc Web::Session::MySQL`).
 - The Oracle, Informix, Sybase and PgHstore backends were removed.
 - `Apache::Session::Serialize::JSON` and `Apache::Session::Generate::SHA256`
-  keep their names.
+  are now `Web::Session::Serialize::JSON` and `Web::Session::Generate::SHA256`.
 
 See [Changes](Changes) for the full list of changes.
 

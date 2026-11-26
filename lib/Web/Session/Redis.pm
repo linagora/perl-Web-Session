@@ -4,9 +4,9 @@ use strict;
 
 use Apache::Session;
 use Web::Session::Store::Redis;
-use Apache::Session::Generate::SHA256;
+use Web::Session::Generate::SHA256;
 use Apache::Session::Lock::Null;
-use Apache::Session::Serialize::JSON;
+use Web::Session::Serialize::JSON;
 use Web::Session::_common;
 
 our $VERSION = '1.0.0';
@@ -17,11 +17,11 @@ sub populate {
 
     $self->{object_store} = new Web::Session::Store::Redis $self;
     $self->{lock_manager} = new Apache::Session::Lock::Null $self;
-    $self->{generate}     = \&Apache::Session::Generate::SHA256::generate;
-    $self->{validate}     = \&Apache::Session::Generate::SHA256::validate;
-    $self->{serialize}    = \&Apache::Session::Serialize::JSON::serializeLatin1;
+    $self->{generate}     = \&Web::Session::Generate::SHA256::generate;
+    $self->{validate}     = \&Web::Session::Generate::SHA256::validate;
+    $self->{serialize}    = \&Web::Session::Serialize::JSON::serializeLatin1;
     $self->{unserialize} =
-      \&Apache::Session::Serialize::JSON::unserializeLatin1;
+      \&Web::Session::Serialize::JSON::unserializeLatin1;
 
     return $self;
 }
@@ -49,7 +49,7 @@ sub _exprPatterns {
 sub unserialize {
     my $session = shift;
     my $tmp     = { serialized => $session };
-    Apache::Session::Serialize::JSON::unserializeLatin1($tmp);
+    Web::Session::Serialize::JSON::unserializeLatin1($tmp);
     return $tmp->{data};
 }
 

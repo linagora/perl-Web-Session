@@ -195,7 +195,7 @@ row.
 
 =head2 Backfilling in SQL (SQLite)
 
-If the serializer is C<Apache::Session::Serialize::JSON> (the default), SQLite
+If the serializer is C<Web::Session::Serialize::JSON> (the default), SQLite
 can extract a field from the JSON text. Rows that are not valid JSON (sessions
 written by old versions with Storable, corrupted rows) are skipped:
 

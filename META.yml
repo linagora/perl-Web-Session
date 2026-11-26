@@ -15,12 +15,6 @@ meta-spec:
   version: '1.4'
 name: Web-Session
 provides:
-  Apache::Session::Generate::SHA256:
-    file: lib/Apache/Session/Generate/SHA256.pm
-    version: v1.3.19
-  Apache::Session::Serialize::JSON:
-    file: lib/Apache/Session/Serialize/JSON.pm
-    version: v1.2.6
   Web::Session:
     file: lib/Web/Session.pm
     version: v1.0.0
@@ -32,6 +26,9 @@ provides:
     version: v1.0.0
   Web::Session::File:
     file: lib/Web/Session/File.pm
+    version: v1.0.0
+  Web::Session::Generate::SHA256:
+    file: lib/Web/Session/Generate/SHA256.pm
     version: v1.0.0
   Web::Session::LDAP:
     file: lib/Web/Session/LDAP.pm
@@ -62,6 +59,9 @@ provides:
     version: v1.0.0
   Web::Session::SQLite:
     file: lib/Web/Session/SQLite.pm
+    version: v1.0.0
+  Web::Session::Serialize::JSON:
+    file: lib/Web/Session/Serialize/JSON.pm
     version: v1.0.0
   Web::Session::Store::Cassandra:
     file: lib/Web/Session/Store/Cassandra.pm

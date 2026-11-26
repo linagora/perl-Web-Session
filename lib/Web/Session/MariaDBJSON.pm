@@ -4,8 +4,8 @@ use strict;
 
 use Apache::Session::Lock::Null;
 use Web::Session::Store::MariaDBJSON;
-use Apache::Session::Generate::SHA256;
-use Apache::Session::Serialize::JSON;
+use Web::Session::Generate::SHA256;
+use Web::Session::Serialize::JSON;
 use Web::Session::MySQLJSON;
 
 our $VERSION = '1.0.0';
@@ -17,10 +17,10 @@ sub populate {
     $self->{object_store} =
       new Web::Session::Store::MariaDBJSON $self;
     $self->{lock_manager} = new Apache::Session::Lock::Null $self;
-    $self->{generate}     = \&Apache::Session::Generate::SHA256::generate;
-    $self->{validate}     = \&Apache::Session::Generate::SHA256::validate;
-    $self->{serialize}    = \&Apache::Session::Serialize::JSON::serialize;
-    $self->{unserialize}  = \&Apache::Session::Serialize::JSON::unserialize;
+    $self->{generate}     = \&Web::Session::Generate::SHA256::generate;
+    $self->{validate}     = \&Web::Session::Generate::SHA256::validate;
+    $self->{serialize}    = \&Web::Session::Serialize::JSON::serialize;
+    $self->{unserialize}  = \&Web::Session::Serialize::JSON::unserialize;
 
     return $self;
 }

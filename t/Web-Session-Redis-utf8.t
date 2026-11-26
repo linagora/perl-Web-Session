@@ -39,18 +39,18 @@ is_deeply( [ $patterns->( 'uid', "\x{3a9}*" ) ],
 # serializeLatin1(): the result can always be downgraded to Latin-1 bytes
 sub ser {
     my $s = { data => shift };
-    Apache::Session::Serialize::JSON::serializeLatin1($s);
+    Web::Session::Serialize::JSON::serializeLatin1($s);
 }
 
 sub unser {
     my $s = { serialized => shift };
-    Apache::Session::Serialize::JSON::unserialize($s);
+    Web::Session::Serialize::JSON::unserialize($s);
     $s->{data};
 }
 {
     my $l = { sn   => $latin, cn => "\x{e9}\x{ff}" };
     my $s = { data => $l };
-    Apache::Session::Serialize::JSON::serialize($s);
+    Web::Session::Serialize::JSON::serialize($s);
     my $old = $s->{serialized};
     utf8::downgrade($old);
     my $new = ser($l);

@@ -3,6 +3,8 @@ Revision history for Perl extension Web::Session (formerly Apache::Session::Brow
 1.0.0 (Web::Session, fork of Apache::Session::Browseable 1.3.19)
     - Fork of Apache::Session::Browseable, renamed Web::Session
       (https://github.com/linagora/perl-Web-Session)
+    - Apache::Session::Serialize::JSON and Apache::Session::Generate::SHA256
+      renamed Web::Session::Serialize::JSON and Web::Session::Generate::SHA256
     - Postgres is now an alias of PgJSON, MySQL of MySQLJSON; new MariaDB
       alias of MariaDBJSON
     - Drop the Oracle, Informix, Sybase and PgHstore backends

@@ -1,10 +1,10 @@
 # Directly copied from Lemonldap::NG project (http://lemonldap-ng.org/)
-package Apache::Session::Serialize::JSON;
+package Web::Session::Serialize::JSON;
 
 use strict;
 use JSON qw(to_json);
 
-our $VERSION = '1.2.6';
+our $VERSION = '1.0.0';
 
 my $json     = JSON->new->allow_nonref;
 my $utf8Json = JSON->new->utf8->allow_nonref;
@@ -73,14 +73,14 @@ sub _unserialize {
 
 =encoding utf8
 
-Apache::Session::Serialize::JSON - Use JSON to zip up data
+Web::Session::Serialize::JSON - Use JSON to zip up data
 
 =head1 SYNOPSIS
 
- use Apache::Session::Serialize::JSON;
+ use Web::Session::Serialize::JSON;
 
- $zipped = Apache::Session::Serialize::JSON::serialize($ref);
- $ref = Apache::Session::Serialize::JSON::unserialize($zipped);
+ $zipped = Web::Session::Serialize::JSON::serialize($ref);
+ $ref = Web::Session::Serialize::JSON::unserialize($zipped);
 
 =head1 DESCRIPTION
 

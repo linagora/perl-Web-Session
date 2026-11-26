@@ -1,12 +1,11 @@
 Build.PL
 Changes
 COPYRIGHT
-lib/Apache/Session/Generate/SHA256.pm
-lib/Apache/Session/Serialize/JSON.pm
 lib/Web/Session/Cassandra.pm
 lib/Web/Session/_common.pm
 lib/Web/Session/DBI.pm
 lib/Web/Session/File.pm
+lib/Web/Session/Generate/SHA256.pm
 lib/Web/Session/LDAP.pm
 lib/Web/Session/MariaDBJSON.pm
 lib/Web/Session/MariaDB.pm
@@ -17,6 +16,7 @@ lib/Web/Session/PgJSON.pm
 lib/Web/Session.pm
 lib/Web/Session/Postgres.pm
 lib/Web/Session/Redis.pm
+lib/Web/Session/Serialize/JSON.pm
 lib/Web/Session/SQLite.pm
 lib/Web/Session/Store/Cassandra.pm
 lib/Web/Session/Store/DBI.pm

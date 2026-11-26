@@ -4,9 +4,9 @@ use Test::More;
 use Storable     qw(freeze nfreeze);
 use MIME::Base64 qw(encode_base64 decode_base64);
 
-use_ok('Apache::Session::Serialize::JSON');
+use_ok('Web::Session::Serialize::JSON');
 
-sub unser { Apache::Session::Serialize::JSON::_unserialize(@_) }
+sub unser { Web::Session::Serialize::JSON::_unserialize(@_) }
 
 my $latin = "\x{c9}lodie";            # Latin-1 range
 my $wide  = "\x{c9}lodie \x{3a9}";    # beyond Latin-1
@@ -15,12 +15,12 @@ sub bytes { my $s = shift; utf8::encode($s); $s }
 
 # serialize() produces characters
 my $session = { data => { cn => $wide, sn => $latin } };
-Apache::Session::Serialize::JSON::serialize($session);
+Web::Session::Serialize::JSON::serialize($session);
 my $chars = $session->{serialized};
 ok( utf8::is_utf8($chars), 'serialize produces characters' );
 $session = { data => { sn => $latin } };
 is(
-    Apache::Session::Serialize::JSON::serialize($session),
+    Web::Session::Serialize::JSON::serialize($session),
     $session->{serialized},
     'serialize returns serialized data'
 );
@@ -69,29 +69,29 @@ is_deeply(
 
 # unserialize()
 $session = { serialized => $utf8 };
-Apache::Session::Serialize::JSON::unserialize($session);
+Web::Session::Serialize::JSON::unserialize($session);
 is_deeply(
     $session->{data},
     { cn => $wide, sn => $latin },
     'unserialize with UTF-8 bytes'
 );
 $session = { serialized => 'null' };
-eval { Apache::Session::Serialize::JSON::unserialize($session) };
+eval { Web::Session::Serialize::JSON::unserialize($session) };
 like( $@, qr/could not be unserialized/, 'unserialize dies on null' );
 
 # unserializeLatin1() never decodes UTF-8
 $session = { serialized => qq'{"cn":"\xc3\xa9"}' };
-Apache::Session::Serialize::JSON::unserializeLatin1($session);
+Web::Session::Serialize::JSON::unserializeLatin1($session);
 is( $session->{data}->{cn}, "\xc3\xa9", 'unserializeLatin1 with bytes' );
 $session = { serialized => $chars };
-Apache::Session::Serialize::JSON::unserializeLatin1($session);
+Web::Session::Serialize::JSON::unserializeLatin1($session);
 is_deeply(
     $session->{data},
     { cn => $wide, sn => $latin },
     'unserializeLatin1 with characters'
 );
 $session = { serialized => encode_base64( freeze( { a => 1 } ) ) };
-Apache::Session::Serialize::JSON::unserializeLatin1( $session,
+Web::Session::Serialize::JSON::unserializeLatin1( $session,
     sub { Storable::thaw( decode_base64( $_[0] ) ) } );
 is_deeply( $session->{data}, { a => 1 }, 'unserializeLatin1 fallback' );
 
