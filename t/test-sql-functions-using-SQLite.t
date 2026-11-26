@@ -128,6 +128,95 @@ quiet {
     }
 };
 is_deeply( $qargs->{Index}, [ 'uid', "a'b" ], 'Store: Index not modified' );
+# deleteIfLowerThan with only "not" does nothing
+$ids = reset_sessions(
+    a => { _utime => 100, _session_kind => 'SSO' },
+    b => { _utime => 100, _session_kind => 'Persistent' },
+);
+is(
+    eval {
+        $class->deleteIfLowerThan( $args,
+            { not => { _session_kind => 'Persistent' } } );
+    },
+    0,
+    'only not: returns 0'
+) or diag $@;
+is( remaining($ids), 'a,b', 'only not: nothing deleted' );
+
+# "or" / "and" that are not hash refs
+foreach my $bad ( 'a', [ _utime => 250 ], \'x' ) {
+    foreach my $type (qw(or and)) {
+        is(
+            quiet {
+                eval { $class->deleteIfLowerThan( $args, { $type => $bad } ) };
+            },
+            0,
+            "\"$type\" is not a hash ref ("
+              . ( ref($bad) || $bad )
+              . '): returns 0'
+        ) or diag $@;
+    }
+}
+is( remaining($ids), 'a,b', 'invalid "or"/"and": nothing deleted' );
+
+# empty or invalid "not" in the rule
+$ids = reset_sessions(
+    old => { _utime => 100, _session_kind => 'SSO' },
+    new => { _utime => 300, _session_kind => 'SSO' },
+);
+( $ret, $err ) = quiet_err {
+    eval {
+        $class->deleteIfLowerThan( $args,
+            { or => { _utime => 200 }, not => {} } );
+    };
+};
+is( $ret, 1, 'empty not: returns 1' ) or diag $@;
+is( $err, '', 'empty not: no warning' );
+is( remaining($ids), 'new', 'empty not: clause ignored' );
+
+foreach my $bad ( 'x', [ _session_kind => 'y' ], \'x' ) {
+    ( $ret, $err ) = quiet_err {
+        eval {
+            $class->deleteIfLowerThan( $args,
+                { or => { _utime => 200 }, not => $bad } );
+        };
+    };
+    is( $ret, 0,
+        '"not" is not a hash ref (' . ( ref($bad) || $bad ) . '): returns 0' )
+      or diag $@;
+    like( $err, qr/not must be a hash reference/,
+        '"not" is not a hash ref (' . ( ref($bad) || $bad ) . '): warning' );
+}
+foreach my $bad ( 'x', [ _utime => 200 ], \'x', undef ) {
+    ( $ret, $err ) =
+      quiet_err { eval { $class->deleteIfLowerThan( $args, $bad ) } };
+    is( $ret, 0,
+        'rule is not a hash ref ('
+          . ( ref($bad) || ( defined $bad ? $bad : 'undef' ) )
+          . '): returns 0' )
+      or diag $@;
+    like( $err, qr/rule must be a hash reference/,
+        'rule is not a hash ref ('
+          . ( ref($bad) || ( defined $bad ? $bad : 'undef' ) )
+          . '): warning' );
+}
+is( remaining($ids), 'new', 'invalid rule: nothing deleted' );
+
+# SQL failure (missing table): no die, false / (0, 0) and a message
+my $badArgs = { %$args, TableName => 'no_such_table' };
+$rule = { or => { _utime => 250 } };
+( $ret, $err ) = quiet_err {
+    my @r = eval { $class->deleteIfLowerThan( $badArgs, $rule ) };
+    $@ ? 'died' : join( ',', @r );
+};
+is( $ret, '0,0', 'SQL failure: returns (0, 0) in list context' ) or diag $@;
+like( $err, qr/deleteIfLowerThan: /, 'SQL failure: message on STDERR' );
+( $ret, $err ) = quiet_err {
+    my $r = eval { $class->deleteIfLowerThan( $badArgs, $rule ) };
+    $@ ? 'died' : ( $r ? 'true' : 'false' );
+};
+is( $ret, 'false', 'SQL failure: returns false in scalar context' );
+like( $err, qr/deleteIfLowerThan: /, 'SQL failure: message on STDERR' );
 
 done_testing();
 
