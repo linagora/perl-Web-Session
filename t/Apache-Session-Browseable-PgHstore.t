@@ -13,9 +13,8 @@ run_tests(
     ],
     corrupt => '"x"=>"_json://{bad"',
     todo    => {
-        deleteAnd      => '"and" rules are built from the "or" hash',
         deleteNot      => 'sessions without the "not" field are never deleted',
-        deleteAndNot   => '"and" rules are built from the "or" hash',
+        deleteAndNot   => 'sessions without the "not" field are never deleted',
         deleteNotQuote => '"not" values are not escaped',
     },
 );
