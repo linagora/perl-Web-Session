@@ -27,18 +27,22 @@ sub populate {
 
 sub searchOn {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
-    $selectField =~ s/'/''/g;
-    my $query =
-      { query => qq'a_session->>"\$.$selectField" =?', values => [$value] };
+    my $dbh   = $class->_classDbh($args);
+    my $query = {
+        query  => $class->_sqlField( $dbh, $selectField ) . ' =?',
+        values => [$value]
+    };
     return $class->_query( $args, $query, @fields );
 }
 
 sub searchOnExpr {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
-    $selectField =~ s/'/''/g;
-    $value       =~ s/\*/%/g;
-    my $query =
-      { query => qq'a_session->>"\$.$selectField" like ?', values => [$value] };
+    my $dbh = $class->_classDbh($args);
+    $value =~ s/\*/%/g;
+    my $query = {
+        query  => $class->_sqlField( $dbh, $selectField ) . ' like ?',
+        values => [$value]
+    };
     return $class->_query( $args, $query, @fields );
 }
 
@@ -55,17 +59,17 @@ sub _query {
       || $Apache::Session::Store::DBI::TableName;
 
     my $sth;
-    my $fields =
-      @fields
-      ? join( ',', 'id', map { s/'//g; qq(a_session->>"\$.$_" AS $_) } @fields )
-      : 'id,a_session';
+    my ( $select, $aliases ) = $class->_sqlSelect( $dbh, @fields );
+    my $fields = @fields ? join( ',', 'id', @$select ) : 'id,a_session';
     $sth =
       $dbh->prepare("SELECT $fields from $table_name where $query->{query}");
     $sth->execute( @{ $query->{values} } );
 
-    # MySQL keeps the case of column aliases
     my $res = $sth->fetchall_hashref('id') or return {};
-    unless (@fields) {
+    if (@fields) {
+        $class->_renameAliases( $res, $aliases );
+    }
+    else {
         my $self = eval "&${class}::populate();";
         my $sub  = $self->{unserialize};
         foreach my $s ( keys %$res ) {
@@ -84,16 +88,26 @@ sub _query {
 
 sub deleteIfLowerThan {
     my ( $class, $args, $rule ) = @_;
-    return wantarray ? ( 0, 0 ) : 0 unless ( $class->_checkRule($rule) );
-    my $query;
+    return wantarray ? ( 0, 0 ) : 0
+      unless ( $class->_checkRule($rule) and $class->_checkThresholds($rule) );
+    my ( $query, @bind );
+    my $dbh = eval { $class->_classDbh($args) };
+    unless ($dbh) {
+        print STDERR "deleteIfLowerThan: $@\n";
+        return wantarray ? ( 0, 0 ) : 0;
+    }
     if ( $rule->{or} ) {
-        $query = join ' OR ',
-          map { qq{cast(a_session->>"\$.$_" as UNSIGNED) < $rule->{or}->{$_}} }
+        $query = join ' OR ', map {
+            my $f = $class->_sqlField( $dbh, $_ );
+            "cast($f as UNSIGNED) < $rule->{or}->{$_}"
+          }
           keys %{ $rule->{or} };
     }
     elsif ( $rule->{and} ) {
-        $query = join ' AND ',
-          map { qq{cast(a_session->>"\$.$_" as UNSIGNED) < $rule->{and}->{$_}} }
+        $query = join ' AND ', map {
+            my $f = $class->_sqlField( $dbh, $_ );
+            "cast($f as UNSIGNED) < $rule->{and}->{$_}"
+          }
           keys %{ $rule->{and} };
     }
     return wantarray ? ( 0, 0 ) : 0 unless ($query);
@@ -101,18 +115,17 @@ sub deleteIfLowerThan {
         $query = "($query) AND " . join(
             ' AND ',
             map {
-                my $f = qq{a_session->>"\$.$_"};
-                "($f IS NULL OR $f <> '$rule->{not}->{$_}')"
+                push @bind, $rule->{not}->{$_};
+                my $f = $class->_sqlField( $dbh, $_ );
+                "($f IS NULL OR $f <> ?)"
               }
               keys %{ $rule->{not} }
         );
     }
     my $table_name = $args->{TableName}
       || $Apache::Session::Store::DBI::TableName;
-    my $rows = eval {
-        my $dbh = $class->_classDbh($args);
-        $dbh->do("DELETE FROM $table_name WHERE $query");
-    };
+    my $rows =
+      eval { $dbh->do( "DELETE FROM $table_name WHERE $query", undef, @bind ) };
     if ($@) {
         print STDERR "deleteIfLowerThan: $@\n";
         return wantarray ? ( 0, 0 ) : 0;
@@ -139,12 +152,13 @@ sub get_key_from_all_sessions {
     # Special case if all wanted fields are indexed
     if ( $data and ref($data) ne 'CODE' ) {
         $data = [$data] unless ( ref($data) );
-        my $fields = join ',', 'id',
-          map { ( my $f = $_ ) =~ s/'//g; qq{a_session->>"\$.$f" AS $f} }
-          @$data;
+        my ( $select, $aliases ) = $class->_sqlSelect( $dbh, @$data );
+        my $fields = join ',', 'id', @$select;
         $sth = $dbh->prepare("SELECT $fields from $table_name");
         $sth->execute;
-        return $sth->fetchall_hashref('id');
+        my $res = $sth->fetchall_hashref('id');
+        $class->_renameAliases( $res, $aliases );
+        return $res;
     }
     $sth = $dbh->prepare_cached("SELECT id,a_session from $table_name");
     $sth->execute;
@@ -173,6 +187,47 @@ sub get_key_from_all_sessions {
         }
     }
     return \%res;
+}
+
+# Build SQL expression to get a field from a_session. Field name is used as
+# JSON path member, quoted if needed
+sub _sqlField {
+    my ( $class, $dbh, $field ) = @_;
+    my $path;
+    if ( $field =~ /^[A-Za-z_][A-Za-z0-9_]*\z/ ) {
+        $path = "\$.$field";
+    }
+    else {
+        ( my $f = $field ) =~ s/(["\\])/\\$1/g;
+        $path = qq{\$."$f"};
+    }
+    return 'a_session->>' . $dbh->quote($path);
+}
+
+# Build the SELECT list for the given fields. Column aliases are generated
+# (a field name may contain "?", which DBD::mysql takes for a placeholder even
+# inside backquotes): returns the list and an alias => field name hash
+sub _sqlSelect {
+    my ( $class, $dbh, @fields ) = @_;
+    my ( @select, %aliases );
+    foreach my $field (@fields) {
+        my $alias = 'f' . scalar(@select);
+        $aliases{$alias} = $field;
+        push @select, $class->_sqlField( $dbh, $field ) . " AS `$alias`";
+    }
+    return ( \@select, \%aliases );
+}
+
+# Replace generated aliases by field names in results
+sub _renameAliases {
+    my ( $class, $res, $aliases ) = @_;
+    return unless ( $res and %$aliases );
+    foreach my $row ( values %$res ) {
+        %$row = (
+            ( map { $aliases->{$_} => $row->{$_} } keys %$aliases ),
+            id => $row->{id}
+        );
+    }
 }
 
 sub _classDbh {

@@ -14,6 +14,5 @@ run_tests(
     ],
     index => 'uid _whatToTrace _session_kind _utime _lastSeen',
     todo  => {
-        ruleNotModified => '"not" values of the rule are escaped in place',
     },
 );

@@ -94,11 +94,12 @@ sub _query {
 sub deleteIfLowerThan {
     my ( $class, $args, $rule ) = @_;
     return wantarray ? ( 0, 0 ) : 0 unless ( $class->_checkRule($rule) );
-    my ( $query, %fields );
+    my ( $query, %fields, @bind );
     my $index =
       ref( $args->{Index} )
       ? $args->{Index}
       : [ split /\s+/, $args->{Index} ];
+    return wantarray ? ( 0, 0 ) : 0 unless ( $class->_checkThresholds($rule) );
     if ( $rule->{or} ) {
         $query = join ' OR ', map {
             $fields{$_}++;
@@ -118,9 +119,9 @@ sub deleteIfLowerThan {
         $query = "($query) AND " . join(
             ' AND ',
             map {
-                $rule->{not}->{$_} =~ s/'/''/g;
                 $fields{$_}++;
-                "($_ IS NULL OR $_ <> '$rule->{not}->{$_}')"
+                push @bind, $rule->{not}->{$_};
+                "($_ IS NULL OR $_ <> ?)"
               }
               keys %{ $rule->{not} }
         );
@@ -131,7 +132,7 @@ sub deleteIfLowerThan {
       || $Apache::Session::Store::DBI::TableName;
     my $rows = eval {
         my $dbh = $class->_classDbh($args);
-        $dbh->do("DELETE FROM $table_name WHERE $query");
+        $dbh->do( "DELETE FROM $table_name WHERE $query", undef, @bind );
     };
     if ($@) {
         print STDERR "deleteIfLowerThan: $@\n";

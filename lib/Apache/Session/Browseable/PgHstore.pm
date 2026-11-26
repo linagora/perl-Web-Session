@@ -28,18 +28,18 @@ sub populate {
 
 sub searchOn {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
-    $selectField =~ s/'/''/g;
     my $query =
-      { query => "a_session -> '$selectField' =?", values => [$value] };
+      { query => $class->_sqlField($selectField) . ' =?', values => [$value] };
     return $class->_query( $args, $query, @fields );
 }
 
 sub searchOnExpr {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
-    $selectField =~ s/'/''/g;
-    $value       =~ s/\*/%/g;
-    my $query =
-      { query => "a_session -> '$selectField' like ?", values => [$value] };
+    $value =~ s/\*/%/g;
+    my $query = {
+        query  => $class->_sqlField($selectField) . ' like ?',
+        values => [$value]
+    };
     return $class->_query( $args, $query, @fields );
 }
 
@@ -54,24 +54,16 @@ sub _query {
     my $sth;
     my $fields =
       @fields
-      ? join( ',', 'id', map { s/'//g; "a_session -> '$_' AS $_" } @fields )
+      ? join( ',',
+        'id',
+        map { $class->_sqlField($_) . ' AS ' . $class->_sqlAlias($_) } @fields )
       : '*';
     $sth =
       $dbh->prepare("SELECT $fields from $table_name where $query->{query}");
     $sth->execute( @{ $query->{values} } );
 
-    # In this case, PostgreSQL change field name in lowercase
     my $res = $sth->fetchall_hashref('id') or return {};
-    if (@fields) {
-        foreach (@fields) {
-            if ( $_ ne lc($_) ) {
-                foreach my $s ( keys %$res ) {
-                    $res->{$s}->{$_} = delete $res->{$s}->{ lc $_ };
-                }
-            }
-        }
-    }
-    else {
+    unless (@fields) {
         my $self = eval "&${class}::populate();";
         my $sub  = $self->{unserialize};
         foreach my $s ( keys %$res ) {
@@ -91,16 +83,21 @@ sub _query {
 sub deleteIfLowerThan {
     my ( $class, $args, $rule ) = @_;
     return wantarray ? ( 0, 0 ) : 0
-      unless ( Apache::Session::Browseable::_common->_checkRule($rule) );
-    my $query;
+      unless ( Apache::Session::Browseable::_common->_checkRule($rule)
+        and Apache::Session::Browseable::_common->_checkThresholds($rule) );
+    my ( $query, @bind );
     if ( $rule->{or} ) {
-        $query = join ' OR ',
-          map { "cast(a_session -> '$_' as bigint) < $rule->{or}->{$_}" }
+        $query = join ' OR ', map {
+            my $f = $class->_sqlField($_);
+            "cast($f as bigint) < $rule->{or}->{$_}"
+          }
           keys %{ $rule->{or} };
     }
     elsif ( $rule->{and} ) {
-        $query = join ' AND ',
-          map { "cast(a_session -> '$_' as bigint) < $rule->{and}->{$_}" }
+        $query = join ' AND ', map {
+            my $f = $class->_sqlField($_);
+            "cast($f as bigint) < $rule->{and}->{$_}"
+          }
           keys %{ $rule->{and} };
     }
     return wantarray ? ( 0, 0 ) : 0 unless ($query);
@@ -108,8 +105,9 @@ sub deleteIfLowerThan {
         $query = "($query) AND " . join(
             ' AND ',
             map {
-                my $f = "a_session -> '$_'";
-                "($f IS NULL OR $f <> '$rule->{not}->{$_}')"
+                push @bind, $rule->{not}->{$_};
+                my $f = $class->_sqlField($_);
+                "($f IS NULL OR $f <> ?)"
               }
               keys %{ $rule->{not} }
         );
@@ -118,7 +116,7 @@ sub deleteIfLowerThan {
       || $Apache::Session::Store::DBI::TableName;
     my $rows = eval {
         my $dbh = $class->_classDbh($args);
-        $dbh->do("DELETE FROM $table_name WHERE $query");
+        $dbh->do( "DELETE FROM $table_name WHERE $query", undef, @bind );
     };
     if ($@) {
         print STDERR "deleteIfLowerThan: $@\n";
@@ -147,8 +145,7 @@ sub get_key_from_all_sessions {
     if ( $data and ref($data) ne 'CODE' ) {
         $data = [$data] unless ( ref($data) );
         my $fields = join ',', 'id',
-          map { ( my $f = $_ ) =~ s/'//g; "a_session -> '$f' AS \"$f\"" }
-          @$data;
+          map { $class->_sqlField($_) . ' AS ' . $class->_sqlAlias($_) } @$data;
         $sth = $dbh->prepare("SELECT $fields from $table_name");
         $sth->execute;
         return $sth->fetchall_hashref('id');
@@ -180,6 +177,27 @@ sub get_key_from_all_sessions {
         }
     }
     return \%res;
+}
+
+# Build SQL expression to get a field from a_session
+sub _sqlField {
+    my ( $class, $field ) = @_;
+
+    # With standard_conforming_strings=off, backslashes are escape characters
+    # in plain literals: use an escape string literal in this case
+    if ( $field =~ /\\/ ) {
+        $field =~ s/(['\\])/$1$1/g;
+        return "a_session -> E'$field'";
+    }
+    $field =~ s/'/''/g;
+    return "a_session -> '$field'";
+}
+
+# Build a column alias that preserves field name case
+sub _sqlAlias {
+    my ( $class, $field ) = @_;
+    $field =~ s/"/""/g;
+    return qq{"$field"};
 }
 
 sub _classDbh {

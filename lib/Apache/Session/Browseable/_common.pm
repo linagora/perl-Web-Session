@@ -42,6 +42,22 @@ sub _checkRule {
     return 1;
 }
 
+# deleteIfLowerThan() thresholds are inserted into SQL queries, so they must
+# be numbers
+sub _checkThresholds {
+    my ( $class, $rule ) = @_;
+    return 1 unless ( ref($rule) eq 'HASH' );
+    my $thresholds = $rule->{or} || $rule->{and};
+    return 1 unless ( ref($thresholds) eq 'HASH' );
+    foreach ( values %$thresholds ) {
+        unless ( defined($_) and /^-?[0-9]+(?:\.[0-9]+)?\z/ ) {
+            print STDERR "deleteIfLowerThan: threshold must be a number\n";
+            return 0;
+        }
+    }
+    return 1;
+}
+
 1;
 __END__
 
