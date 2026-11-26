@@ -11,7 +11,6 @@ run_tests(
 'CREATE TABLE __TABLE__ (id varchar(64) not null primary key, a_session json)'
     ],
     todo => {
-        searchOnData   => 'session data is not decoded',
         searchOnFields => 'field names are returned lower-cased',
         deleteAnd      => '"and" rules are built from the "or" hash',
         deleteNot      => 'sessions without the "not" field are never deleted',
