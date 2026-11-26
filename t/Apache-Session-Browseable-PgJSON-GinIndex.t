@@ -60,7 +60,7 @@ my @tests = (
     ],
     [
         'Quotes', $gin, qq{a"b\\c'd}, qq{O'B"r\\n},
-        qq{${one}a_session ->> 'a"b\\c''d' =?},
+        qq{${one}a_session ->> E'a"b\\\\c''d' =?},
         [ q{{"a\"b\\\\c'd":"O'B\"r\\\\n"}}, qq{O'B"r\\n} ]
     ],
     [
