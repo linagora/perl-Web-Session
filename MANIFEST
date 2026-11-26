@@ -54,6 +54,7 @@ t/Apache-Session-Browseable-populate.t
 t/Apache-Session-Browseable-Postgres.t
 t/Apache-Session-Browseable-Redis.t
 t/Apache-Session-Browseable-Redis-keysRe.t
+t/Apache-Session-Browseable-Redis-searchOnExpr.t
 t/Apache-Session-Browseable-SQLite.t
 t/Apache-Session-Browseable-Store-DBI.t
 t/Apache-Session-Browseable-Store-MySQL.t
