@@ -155,8 +155,6 @@ untie %session;
 # rolled back, or the query isn't SQLite's), which provides a failure
 my %stores = (
     Postgres  => [ 0, 1 ],
-    Oracle    => [ 0, 1 ],
-    Informix  => [ 0, 1 ],
     Patroni   => [ 0, 0 ],
     SQLite    => [ 0, 0 ],
     MySQL     => [ 1, 0 ],

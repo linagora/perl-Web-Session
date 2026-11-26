@@ -39,19 +39,20 @@ my $index = { Index => '_utime _oidcRtUpdate' };
 my @tests = (
     [ 'PgJSON',    q{cast(a_session ->> '_oidcRtUpdate' as bigint)} ],
     [ 'Patroni',   q{cast(a_session ->> '_oidcRtUpdate' as bigint)} ],
-    [ 'PgHstore',  q{cast(a_session -> '_oidcRtUpdate' as bigint)} ],
+    [ 'Postgres',  q{cast(a_session ->> '_oidcRtUpdate' as bigint)} ],
     [ 'MySQLJSON', q{cast(a_session->>'$._oidcRtUpdate' as UNSIGNED)} ],
+    [ 'MySQL',     q{cast(a_session->>'$._oidcRtUpdate' as UNSIGNED)} ],
     [
         'MariaDBJSON',
         q{cast(JSON_VALUE(a_session, '$._oidcRtUpdate') as UNSIGNED)}
     ],
+    [
+        'MariaDB',
+        q{cast(JSON_VALUE(a_session, '$._oidcRtUpdate') as UNSIGNED)}
+    ],
     [ 'MariaDBJSON', '`_oidcRtUpdate`',                $index ],
-    [ 'Postgres',    'cast(_oidcRtUpdate as bigint)',  $index ],
-    [ 'MySQL',       '_oidcRtUpdate',                  $index ],
+    [ 'MariaDB',     '`_oidcRtUpdate`',                $index ],
     [ 'SQLite',      'cast(_oidcRtUpdate as integer)', $index ],
-    [ 'Oracle',      'cast(_oidcRtUpdate as integer)', $index ],
-    [ 'Informix',    'cast(_oidcRtUpdate as integer)', $index ],
-    [ 'Sybase',      'cast(_oidcRtUpdate as integer)', $index ],
 );
 
 # Sessions returned by the mocked get_key_from_all_sessions()
@@ -150,7 +151,7 @@ foreach my $backend (qw(SQLite Cassandra)) {
 # Column backends: fields not listed in Index are compared in Perl (always
 # with Cassandra: CQL can't compare them). Sessions without the field are
 # skipped; "abc" is 0 as in Perl
-foreach my $backend (qw(Postgres MySQL SQLite Cassandra)) {
+foreach my $backend (qw(SQLite Cassandra)) {
     my $class = "Apache::Session::Browseable::$backend";
     my $args  = $backend eq 'Cassandra' ? $index : {};
   SKIP: {
@@ -205,8 +206,8 @@ SKIP: {
 
 # _buildCompareExpression() only accepts the operators it knows, in each
 # backend
-foreach my $backend ( 'Postgres', 'PgJSON', 'PgHstore', 'MySQL', 'MySQLJSON',
-    'MariaDBJSON', 'SQLite', 'Oracle', 'Informix', 'Sybase', 'Patroni' )
+foreach my $backend ( 'Postgres', 'PgJSON', 'MySQL', 'MySQLJSON', 'MariaDB',
+    'MariaDBJSON', 'SQLite', 'Patroni' )
 {
     my $class = "Apache::Session::Browseable::$backend";
   SKIP: {

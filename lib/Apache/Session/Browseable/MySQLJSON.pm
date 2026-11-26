@@ -100,8 +100,7 @@ sub _query {
         $class->_renameAliases( $res, $aliases );
     }
     else {
-        my $self = eval "&${class}::populate();";
-        my $sub  = $self->{unserialize};
+        my $sub = $class->_unserializer;
         foreach my $s ( keys %$res ) {
             eval {
                 my $tmp = &$sub( { serialized => $res->{$s}->{a_session} } );
@@ -436,7 +435,8 @@ Field names and searched values are strings: a non flagged string containing
 bytes C<0x80> or more is first tried as UTF-8 and read as Latin-1 if it is
 not valid UTF-8, so both encodings find non-ASCII values.
 
-Use it like L<Apache::Session::Browseable::MySQL>
+Use it like the other backends of L<Apache::Session::Browseable>.
+L<Apache::Session::Browseable::MySQL> is an alias of this module.
 
 =head1 DESCRIPTION
 

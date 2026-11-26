@@ -35,8 +35,8 @@ first time a session is tied, and uses it again for the next ones. With TLS
 or a remote database, opening a connection costs more than the session access
 itself.
 
-This applies to all DBI backends (Postgres, PgJSON, PgHstore, Patroni, MySQL,
-MySQLJSON, SQLite, Oracle, Sybase, Informix and Cassandra). The
+This applies to all DBI backends (PgJSON, Patroni, MySQLJSON, MariaDBJSON,
+SQLite and Cassandra, and the Postgres, MySQL and MariaDB aliases). The
 handle is cached by DBI C<connect_cached()>, which checks it with C<ping()>
 and reconnects if the connection was lost. It is opened with the attributes
 that these backends always used (C<AutoCommit> in particular) and gets the
@@ -53,7 +53,6 @@ with Lemonldap::NG, to disable the reuse in C<globalStorageOptions>:
       Password   => 'secret',
       TableName  => 'sessions',
       Commit     => 1,
-      Index      => '_whatToTrace _session_kind _utime _lastSeen ipAddr',
       noreuse    => 1,
   },
 
@@ -74,8 +73,8 @@ it: it is not meant to be used by a child created by C<fork()>.
 
 =item *
 
-Backends that use transactions (C<AutoCommit> off: Postgres, PgJSON,
-PgHstore, Patroni, SQLite, Oracle, Sybase and Informix) end the transaction
+Backends that use transactions (C<AutoCommit> off: PgJSON, Patroni and
+SQLite) end the transaction
 each time a session is untied, even after a failure: it is committed if
 C<Commit> is set, rolled back otherwise. So set C<Commit =E<gt> 1> with these
 backends (SQLite and Patroni set it by default). No transaction, and so no
@@ -92,7 +91,7 @@ sessions tied at once with independent transactions.
 
 Search methods (searchOn(), get_key_from_all_sessions(),
 deleteIfLowerThan()...) already use a persistent connection, with
-C<AutoCommit> on. MySQL and MySQLJSON sessions use the same
+C<AutoCommit> on. MySQLJSON and MariaDBJSON sessions use the same
 attributes and share it; with the other backends, a process that also calls
 search methods keeps two connections.
 
@@ -106,14 +105,13 @@ search methods keeps two connections.
 
 =over
 
-=item L<Apache::Session::Browseable::Postgres>
+=item L<Apache::Session::Browseable::PgJSON>: uses a "json/jsonb" field
 
-=item L<Apache::Session::Browseable::PgHstore>: uses "hstore" field
+=item L<Apache::Session::Browseable::Postgres>: alias of PgJSON
 
-=item L<Apache::Session::Browseable::PgJSON>: uses "json/jsonb" field
-
-=item L<Apache::Session::Browseable::Patroni>: uses "json/jsonb" field and
-manage connection using Patroni API to find master node of PostgreSQL cluster
+=item L<Apache::Session::Browseable::Patroni>: uses a "json/jsonb" field and
+manages connections using the Patroni API to find the primary node of a
+PostgreSQL cluster
 
 =back
 
@@ -121,22 +119,21 @@ manage connection using Patroni API to find master node of PostgreSQL cluster
 
 =over
 
-=item L<Apache::Session::Browseable::MySQL>: for MySQL and MariaDB
+=item L<Apache::Session::Browseable::MySQLJSON>: for MySQL, uses a "json"
+field
 
-=item L<Apache::Session::Browseable::MySQLJSON>: for MySQL only, uses "json" field
+=item L<Apache::Session::Browseable::MySQL>: alias of MySQLJSON
 
-=item L<Apache::Session::Browseable::MariaDBJSON>: for MariaDB only, uses
+=item L<Apache::Session::Browseable::MariaDBJSON>: for MariaDB, uses a
 "json" field and generated columns
+
+=item L<Apache::Session::Browseable::MariaDB>: alias of MariaDBJSON
 
 =back
 
 =head3 Other
 
 =over
-
-=item L<Apache::Session::Browseable::Informix>
-
-=item L<Apache::Session::Browseable::Oracle>
 
 =item L<Apache::Session::Browseable::SQLite>
 
@@ -152,10 +149,20 @@ manage connection using Patroni API to find master node of PostgreSQL cluster
 
 =back
 
+=head2 Other
+
+=over
+
+=item L<Apache::Session::Browseable::File>
+
+=item L<Apache::Session::Browseable::LDAP>
+
+=back
+
 =head1 ADDING A COLUMN TO Index ON AN EXISTING TABLE
 
-With the backends that store indexed fields in dedicated columns (Postgres,
-MySQL, SQLite, Oracle, Informix...), the index columns are filled only when a
+With the backends that store indexed fields in dedicated columns (SQLite,
+Cassandra), the index columns are filled only when a
 session is inserted or updated. If you add a column to C<Index> on a table that
 already contains sessions, this column stays C<NULL> for every existing session
 until it is written again. Such sessions are considered as "field absent":
@@ -175,77 +182,28 @@ C<_session_kind> (a field of Lemonldap::NG sessions): replace it by your field.
 
 =head2 Backends that need no backfill
 
-L<Apache::Session::Browseable::PgJSON>, L<Apache::Session::Browseable::PgHstore>,
-L<Apache::Session::Browseable::MySQLJSON> and MariaDB's JSON variant use an
+L<Apache::Session::Browseable::PgJSON>, L<Apache::Session::Browseable::Patroni>,
+L<Apache::Session::Browseable::MySQLJSON> and
+L<Apache::Session::Browseable::MariaDBJSON> (and their aliases) use an
 expression index or a generated column computed from the serialized data:
 creating the index (or the generated column) computes it for every existing
 row.
 
-=head2 Backfilling in SQL (JSON serializer only)
+=head2 Backfilling in SQL (SQLite)
 
-This is possible only if the serializer is C<Apache::Session::Serialize::JSON>
-(the case of Postgres, Patroni, MySQL, SQLite, Oracle...) B<and> the database
-can extract a field from a JSON text. The following examples assume a table
-named C<sessions> whose C<a_session> column contains the serialized session.
+If the serializer is C<Apache::Session::Serialize::JSON> (the default), SQLite
+can extract a field from the JSON text. Rows that are not valid JSON (sessions
+written by old versions with Storable, corrupted rows) are skipped:
 
-If a single row is not valid JSON, the whole C<UPDATE> fails and nothing is
-backfilled. Such rows exist: sessions written by old versions with Storable
-(the JSON serializer still reads them through C<Storable::thaw>), or corrupted
-rows. The examples therefore skip them.
+  UPDATE sessions SET _session_kind = json_extract(a_session, '$._session_kind')
+    WHERE _session_kind IS NULL AND json_valid(a_session);
 
-=over
-
-=item PostgreSQL 16 and later
-
-  UPDATE sessions SET _session_kind = a_session::json->>'_session_kind'
-    WHERE _session_kind IS NULL AND a_session IS JSON;
-
-Older PostgreSQL versions have no simple equivalent of C<IS JSON>: use the
-generic method below.
-
-=item MySQL / MariaDB
-
-  UPDATE sessions
-    SET _session_kind = JSON_UNQUOTE(JSON_EXTRACT(a_session, '$._session_kind'))
-    WHERE _session_kind IS NULL AND JSON_VALID(a_session);
-
-=item SQLite
-
-Use C<json_extract(a_session, '$._session_kind')>, restricted to rows where
-C<json_valid(a_session)> is true.
-
-=item Oracle (12.1.0.2 and later)
-
-Use C<JSON_VALUE(a_session, '$._session_kind')>.
-
-=back
-
-Rows skipped by these statements (and rows that were still C<NULL> after them)
-must be handled with the generic method.
+Rows skipped by this statement must be handled with the generic method.
 
 =head2 Backends where SQL cannot be used
 
-=over
-
-=item Sybase
-
-L<Apache::Session::Browseable::Sybase> uses
-C<Apache::Session::Serialize::Sybase>, not JSON: no SQL statement can extract a
-field from C<a_session>.
-
-=item Informix
-
-The session is stored as JSON text, but Informix has no simple function to
-extract a field from a text column.
-
-=item Redis and LDAP
-
-The index is maintained by the module only when a session is written, and there
-is no SQL column to fill.
-
-=back
-
-Use the generic method for these backends.
+Cassandra, Redis and LDAP: the index is maintained by the module only when a
+session is written. Use the generic method for these backends.
 
 =head2 Generic method: re-save every session from Perl
 
@@ -253,7 +211,7 @@ This works with every backend (including the ones above and non-JSON rows): read
 each session and write it again, so that the store rewrites its index columns.
 Set C<$class> and C<$args> as you do in your application:
 
-  my $class = 'Apache::Session::Browseable::Postgres';   # your backend
+  my $class = 'Apache::Session::Browseable::SQLite';   # your backend
   my $ids   = $class->get_key_from_all_sessions( $args, sub { 1 } );
   foreach my $id ( keys %$ids ) {
       tie my %s, $class, $id, $args;
@@ -292,7 +250,7 @@ delete. Backfill before relying on the column.
 =head1 TABLE AND COLUMN NAMES
 
 With PostgreSQL, MySQL, MariaDB and SQLite, the table name (C<TableName>) and
-the columns of the fields listed in C<Index> are quoted in SQL queries
+the columns of the fields listed in C<Index> (column backends) are quoted in SQL queries
 (C<quote_identifier()> of DBI), so an indexed field may be named after a
 reserved word (C<order>, C<user>...). A C<schema.table> name is quoted part by
 part, and a name that already contains quotes is used as is.
@@ -303,7 +261,7 @@ before being quoted, so C<TableName =E<gt> 'Sessions'> and the
 C<_whatToTrace> column keep working; tables and columns created with quoted
 mixed-case names are not supported.
 
-Other databases (Oracle, Sybase, Informix...) get the names unchanged.
+Other drivers get the names unchanged.
 
 =head1 SEE ALSO
 

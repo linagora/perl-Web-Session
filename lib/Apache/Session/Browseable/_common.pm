@@ -69,9 +69,8 @@ sub _checkThresholds {
 # lowercased before being quoted, which keeps the previous behaviour for
 # names in mixed case (TableName => 'Sessions' still finds "sessions"). A
 # "schema.table" name is quoted part by part, and a name that already
-# contains quotes is left unchanged. Other drivers (Oracle, Sybase,
-# Informix...) get the name as before: quoting would change its case or
-# meaning there
+# contains quotes is left unchanged. Other drivers get the name as before:
+# quoting could change its case or meaning there
 sub _quoteIdentifier {
     my ( $class, $dbh, $name ) = @_;
     my $driver = $dbh->{Driver}->{Name};
@@ -99,7 +98,7 @@ sub _tableName {
         $args->{TableName} || $Apache::Session::Store::DBI::TableName );
 }
 
-# Digits are bounded: MySQL and Oracle reject out-of-range literals
+# Digits are bounded: MySQL rejects out-of-range literals
 sub _isNumber {
     my ( $class, $value ) = @_;
     return ( defined($value)

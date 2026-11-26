@@ -336,8 +336,8 @@ __END__
 
 =head1 NAME
 
-Apache::Session::Browseable::PgJSON - Hstore type support for
-L<Apache::Session::Browseable::Postgres>
+Apache::Session::Browseable::PgJSON - Add index and search methods to
+Apache::Session for PostgreSQL, using a JSON column
 
 =head1 SYNOPSIS
 
@@ -386,8 +386,9 @@ A single GIN index can replace the btree indexes used only for equality
 searches (like C<s1>), but it is much bigger and slows down updates: see
 L</GIN INDEX>.
 
-Use it like L<Apache::Session::Browseable::Postgres> except that you don't
-need to declare indexes
+Don't set C<Index>: any field can be searched. Use it like the other backends
+of L<Apache::Session::Browseable>. L<Apache::Session::Browseable::Postgres> is
+an alias of this module.
 
 =head1 DESCRIPTION
 

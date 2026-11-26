@@ -36,19 +36,14 @@ my $dbh = FakeDbh->new;
 # Connection arguments (Index) are only used by MariaDBJSON
 my $index = { Index => '_utime _lastSeen' };
 my @tests = (
-    [ 'Postgres', '_utime', 'cast(_utime as bigint) < 200' ],
-    [ 'MySQL',    '_utime', '_utime < 200' ],
+    [ 'Postgres', '_utime', q{cast(a_session ->> '_utime' as bigint) < 200} ],
+    [ 'MySQL', '_utime', q{cast(a_session->>'$._utime' as UNSIGNED) < 200} ],
     [ 'PgJSON',   '_utime', q{cast(a_session ->> '_utime' as bigint) < 200} ],
     [
         'PgJSON', '_lastSeen',
         q{cast(a_session ->> '_lastSeen' as bigint) < 200}
     ],
     [ 'Patroni',  '_utime', q{cast(a_session ->> '_utime' as bigint) < 200} ],
-    [ 'PgHstore', '_utime', q{cast(a_session -> '_utime' as bigint) < 200} ],
-    [
-        'PgHstore', '_lastSeen',
-        q{cast(a_session -> '_lastSeen' as bigint) < 200}
-    ],
     [
         'MySQLJSON', '_utime',
         q{cast(a_session->>'$._utime' as UNSIGNED) < 200}

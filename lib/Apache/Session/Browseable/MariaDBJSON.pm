@@ -65,7 +65,7 @@ sub _useColumn {
 
 # Indexed fields are read from a generated column: a column that exists but
 # is not generated (for example left over from a migration from
-# Browseable::MySQL, where the store wrote real columns) stays NULL. Check
+# the former Browseable::MySQL, where the store wrote real columns) stays NULL. Check
 # the columns once per handle, table and Index list. Returns the hash
 # reference of the fields that can be read from their column (empty without
 # database handle)
@@ -198,7 +198,8 @@ selects utf8mb4 for the connection (characters outside the BMP, such as
 emoji, are supported). When you give your own C<Handle> to the store, it is
 used as is: connect it with C<mysql_enable_utf8mb4> (or C<SET NAMES utf8mb4>).
 
-Use it like L<Apache::Session::Browseable::MySQL>.
+Use it like L<Apache::Session::Browseable::MySQLJSON>.
+L<Apache::Session::Browseable::MariaDB> is an alias of this module.
 
 =head2 Generated columns
 
@@ -224,7 +225,8 @@ C<id> and C<a_session>.
 
 A column listed in C<Index> that exists but is not generated from
 C<a_session> - for example one left over from a migration from
-L<Apache::Session::Browseable::MySQL>, which wrote real columns - stays NULL.
+the former column-based C<Apache::Session::Browseable::MySQL>, which wrote
+real columns - stays NULL.
 This module checks C<Index> once per database handle, warns about such fields
 (and about missing columns) and reads them from the JSON document like fields
 that are not listed in C<Index>: results are the same, only slower.
@@ -327,8 +329,7 @@ integers.
 
 =head1 SEE ALSO
 
-L<Apache::Session>, L<Apache::Session::Browseable::MySQL>,
-L<Apache::Session::Browseable::MySQLJSON>, L<http://lemonldap-ng.org>
+L<Apache::Session>, L<Apache::Session::Browseable::MySQLJSON>, L<http://lemonldap-ng.org>
 
 =head1 COPYRIGHT AND LICENSE
 

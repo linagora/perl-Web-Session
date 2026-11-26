@@ -195,23 +195,6 @@ sub deleteIfLowerThan {
     }
 }
 
-# Restore the case of requested fields in a result set whose column names were
-# read in lower case (Oracle results are read with NAME_lc)
-sub _restoreCase {
-    my ( $class, $res, @fields ) = @_;
-    foreach my $f (@fields) {
-        next if ref($f) or $f eq lc($f);
-        my $lc = lc $f;
-        foreach my $s ( keys %$res ) {
-            my $h = $res->{$s};
-            next unless ref($h) eq 'HASH';
-            $h->{$f} = delete $h->{$lc}
-              if exists $h->{$lc} and not exists $h->{$f};
-        }
-    }
-    return $res;
-}
-
 # Overriding this only changes deleteIfLowerThan(): searchLt() and searchGt()
 # use _buildCompareExpression()
 sub _buildLowerThanExpression {

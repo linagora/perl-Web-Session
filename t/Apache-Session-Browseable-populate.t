@@ -3,8 +3,7 @@ use Test::More;
 
 # Every SQL backend must reference existing serialize/unserialize subs
 foreach my $backend (
-    qw(Informix MySQL MySQLJSON Oracle PgHstore PgJSON
-    Postgres SQLite Sybase)
+    qw(MariaDB MariaDBJSON MySQL MySQLJSON Patroni PgJSON Postgres SQLite)
   )
 {
     my $class = "Apache::Session::Browseable::$backend";

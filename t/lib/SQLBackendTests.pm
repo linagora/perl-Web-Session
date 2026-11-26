@@ -3,7 +3,7 @@ package SQLBackendTests;
 # Common tests for SQL backends, run only if <env>_DSN is set (credentials
 # are read from <env>_USER and <env>_PASSWORD). Parameters:
 #  - class:   Apache::Session::Browseable class to test
-#  - driver:  DBD driver name (Pg, mysql, MariaDB, Oracle); if not set, it
+#  - driver:  DBD driver name (Pg, mysql, MariaDB); if not set, it
 #             is read from <env>_DSN
 #  - env:     environment variables prefix (PG, MYSQL, MARIADB, ORACLE)
 #  - table:   table name (dropped before and after tests)
@@ -11,8 +11,8 @@ package SQLBackendTests;
 #  - index:   indexed fields (DBI based backends, one column per field)
 #  - corrupt: a_session value that can't be unserialized
 #  - null:    1 if a field can be stored as JSON null (JSON backends)
-#  - json:    1 if any field can be queried (JSON/Hstore backends)
-#  - weird:   field names that need quoting (JSON/Hstore backends)
+#  - json:    1 if any field can be queried (JSON backends)
+#  - weird:   field names that need quoting (JSON backends)
 #  - scs:     1 to also test with standard_conforming_strings=off (PostgreSQL)
 #  - reserved: an indexed field named after a reserved word (quoted column)
 #  - tableCase: 1 to also use the table with its name in upper case
@@ -73,15 +73,7 @@ sub run_tests {
         { RaiseError => 1, PrintError => 0, PrintWarn => 0, AutoCommit => 1 }
     );
 
-    # Oracle < 23 has no DROP TABLE IF EXISTS
-    my $drop = sub {
-        if ( $o{driver} eq 'Oracle' ) {
-            eval { $dbh->do("DROP TABLE $table") };
-        }
-        else {
-            $dbh->do("DROP TABLE IF EXISTS $table");
-        }
-    };
+    my $drop = sub { $dbh->do("DROP TABLE IF EXISTS $table") };
     my $create = sub {
         $drop->();
         foreach ( @{ $o{create} } ) {
