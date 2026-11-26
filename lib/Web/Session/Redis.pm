@@ -707,7 +707,7 @@ L<Apache::Session>
 
 =over
 
-=item 2009-2025 by Xavier Guimard
+=item 2009-2026 by Xavier Guimard
 
 =item 2013-2025 by Clément Oudot
 
@@ -715,7 +715,7 @@ L<Apache::Session>
 
 =item 2013-2025 by Worteks
 
-=item 2023-2025-2025 by Linagora
+=item 2023-2026 by Linagora
 
 =back
 

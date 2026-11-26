@@ -337,7 +337,7 @@ L<Apache::Session>, L<Web::Session::MySQLJSON>, L<http://lemonldap-ng.org>
 
 =over
 
-=item 2009-2025 by Xavier Guimard
+=item 2009-2026 by Xavier Guimard
 
 =item 2013-2025 by Clément Oudot
 
@@ -345,7 +345,7 @@ L<Apache::Session>, L<Web::Session::MySQLJSON>, L<http://lemonldap-ng.org>
 
 =item 2013-2025 by Worteks
 
-=item 2023-2025 by Linagora
+=item 2023-2026 by Linagora
 
 =back
 

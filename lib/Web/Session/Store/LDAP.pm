@@ -418,7 +418,7 @@ session id (C<cn>), serialized content (C<description>) and indexes (C<ou>).
 
 =over
 
-=item 2009-2025 by Xavier Guimard
+=item 2009-2026 by Xavier Guimard
 
 =item 2013-2025 by Clément Oudot
 
@@ -426,7 +426,7 @@ session id (C<cn>), serialized content (C<description>) and indexes (C<ou>).
 
 =item 2013-2025 by Worteks
 
-=item 2023-2025 by Linagora
+=item 2023-2026 by Linagora
 
 =item 2026 by Christophe Maudoux
 
