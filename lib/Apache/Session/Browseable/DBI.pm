@@ -13,11 +13,11 @@ sub searchOn {
     my $class = shift;
     my ( $args, $selectField, $value, @fields ) = @_;
 
-    # Escape quotes
-    $selectField =~ s/'/''/g;
     if ( $class->_fieldIsIndexed( $args, $selectField ) ) {
+        my $column =
+          $class->_quoteColumn( $class->_classDbh($args), $selectField );
         return $class->_query( $args, $selectField, $value,
-            { query => "$selectField=?", values => [$value] }, @fields );
+            { query => "$column=?", values => [$value] }, @fields );
     }
     else {
         return $class->SUPER::searchOn(@_);
@@ -28,12 +28,12 @@ sub searchOnExpr {
     my $class = shift;
     my ( $args, $selectField, $value, @fields ) = @_;
 
-    # Escape quotes
-    $selectField =~ s/'/''/g;
     if ( $class->_fieldIsIndexed( $args, $selectField ) ) {
         $value =~ s/\*/%/g;
+        my $column =
+          $class->_quoteColumn( $class->_classDbh($args), $selectField );
         return $class->_query( $args, $selectField, $value,
-            { query => "$selectField like ?", values => [$value] }, @fields );
+            { query => "$column like ?", values => [$value] }, @fields );
     }
     else {
         return $class->SUPER::searchOnExpr(@_);
@@ -49,14 +49,14 @@ sub _query {
       : [ split /\s+/, $args->{Index} ];
 
     my $dbh        = $class->_classDbh($args);
-    my $table_name = $args->{TableName}
-      || $Apache::Session::Store::DBI::TableName;
+    my $table_name = $class->_tableName( $dbh, $args );
 
     # Case 1: all requested fields are also indexed
     my $indexed = $class->_tabInTab( \@fields, $index );
     my $sth;
     if ($indexed) {
-        my $fields = join( ',', 'id', map { s/'//g; $_ } @fields );
+        my $fields =
+          join( ',', 'id', map { $class->_quoteColumn( $dbh, $_ ) } @fields );
         $sth = $dbh->prepare(
             "SELECT $fields from $table_name where $query->{query}");
         $sth->execute( @{ $query->{values} } );
@@ -95,6 +95,11 @@ sub deleteIfLowerThan {
     my ( $class, $args, $rule ) = @_;
     return wantarray ? ( 0, 0 ) : 0 unless ( $class->_checkRule($rule) );
     my ( $query, %fields, @bind );
+    my $dbh = eval { $class->_classDbh($args) };
+    unless ($dbh) {
+        print STDERR "deleteIfLowerThan: $@\n";
+        return wantarray ? ( 0, 0 ) : 0;
+    }
     my $index =
       ref( $args->{Index} )
       ? $args->{Index}
@@ -103,14 +108,16 @@ sub deleteIfLowerThan {
     if ( $rule->{or} ) {
         $query = join ' OR ', map {
             $fields{$_}++;
-            $class->_buildLowerThanExpression( $_, $rule->{or}->{$_} )
+            $class->_buildLowerThanExpression( $class->_quoteColumn( $dbh, $_ ),
+                $rule->{or}->{$_} )
           }
           keys %{ $rule->{or} };
     }
     elsif ( $rule->{and} ) {
         $query = join ' AND ', map {
             $fields{$_}++;
-            $class->_buildLowerThanExpression( $_, $rule->{and}->{$_} )
+            $class->_buildLowerThanExpression( $class->_quoteColumn( $dbh, $_ ),
+                $rule->{and}->{$_} )
           }
           keys %{ $rule->{and} };
     }
@@ -121,19 +128,17 @@ sub deleteIfLowerThan {
             map {
                 $fields{$_}++;
                 push @bind, $rule->{not}->{$_};
-                "($_ IS NULL OR $_ <> ?)"
+                my $c = $class->_quoteColumn( $dbh, $_ );
+                "($c IS NULL OR $c <> ?)"
               }
               keys %{ $rule->{not} }
         );
     }
     return wantarray ? ( 0, 0 ) : 0
       unless ( $class->_tabInTab( [ keys %fields ], $index ) );
-    my $table_name = $args->{TableName}
-      || $Apache::Session::Store::DBI::TableName;
-    my $rows = eval {
-        my $dbh = $class->_classDbh($args);
-        $dbh->do( "DELETE FROM $table_name WHERE $query", undef, @bind );
-    };
+    my $table_name = $class->_tableName( $dbh, $args );
+    my $rows =
+      eval { $dbh->do( "DELETE FROM $table_name WHERE $query", undef, @bind ) };
     if ($@) {
         print STDERR "deleteIfLowerThan: $@\n";
         return wantarray ? ( 0, 0 ) : 0;
@@ -149,7 +154,8 @@ sub deleteIfLowerThan {
     }
 }
 
-# Let specialized modules override this syntax if they need to
+# Let specialized modules override this syntax if they need to. $field is the
+# column name returned by _quoteColumn()
 sub _buildLowerThanExpression {
     my ( $class, $field, $value ) = @_;
     return "cast($field as integer) < $value";
@@ -160,9 +166,8 @@ sub get_key_from_all_sessions {
     my $args  = shift;
     my $data  = shift;
 
-    my $table_name = $args->{TableName}
-      || $Apache::Session::Store::DBI::TableName;
-    my $dbh = $class->_classDbh($args);
+    my $dbh        = $class->_classDbh($args);
+    my $table_name = $class->_tableName( $dbh, $args );
 
     # Special case if all wanted fields are indexed
     if ( $data and ref($data) ne 'CODE' ) {
@@ -179,7 +184,7 @@ sub get_key_from_all_sessions {
         if ($indexed) {
             my $sth =
               $dbh->prepare_cached( 'SELECT id,'
-                  . join( ',', map { ( my $f = $_ ) =~ s/'/''/g; $f } @$data )
+                  . join( ',', map { $class->_quoteColumn( $dbh, $_ ) } @$data )
                   . " from $table_name" );
             $sth->execute;
             return $sth->fetchall_hashref('id');

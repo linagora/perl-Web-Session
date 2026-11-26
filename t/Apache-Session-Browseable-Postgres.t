@@ -10,9 +10,11 @@ run_tests(
     create => [
             'CREATE TABLE __TABLE__ (id varchar(64) not null primary key,'
           . ' a_session text, uid text, _whatToTrace text, _session_kind text,'
-          . ' _utime bigint, _lastSeen bigint)'
+          . ' _utime bigint, _lastSeen bigint, "order" text)'
     ],
-    index => 'uid _whatToTrace _session_kind _utime _lastSeen',
+    index     => 'uid _whatToTrace _session_kind _utime _lastSeen order',
+    reserved  => 'order',
+    tableCase => 1,
     todo  => {
     },
 );

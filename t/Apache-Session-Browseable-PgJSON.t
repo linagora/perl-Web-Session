@@ -14,6 +14,7 @@ run_tests(
     json  => 1,
     weird => [ "weird'field", 'a"b\\c', 'a?b', 'x\\' ],
     scs   => 1,
+    tableCase => 1,
     todo => {
     },
 );

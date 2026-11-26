@@ -2,6 +2,7 @@ package Apache::Session::Browseable::Store::DBI;
 
 use strict;
 use Apache::Session::Store::DBI;
+use Apache::Session::Browseable::_common;
 our @ISA     = qw(Apache::Session::Store::DBI);
 our $VERSION = 1.3.11;
 
@@ -18,10 +19,10 @@ sub insert {
       : [ split /\s+/, $session->{args}->{Index} ];
 
     $self->{insert_sth} //= $self->{dbh}->prepare_cached(
-        "INSERT INTO $self->{table_name} ("
+            'INSERT INTO '
+          . $self->_quoteTable( $self->{table_name} ) . ' ('
           . join( ',',
-            'id', 'a_session',
-            map { ( my $f = $_ ) =~ s/'/''/g; $f } @$index )
+            'id', 'a_session', map { $self->_quoteColumn($_) } @$index )
           . ') VALUES ('
           . join( ',', ('?') x ( 2 + @$index ) ) . ')'
     );
@@ -53,10 +54,13 @@ sub update {
       : [ split /\s+/, $session->{args}->{Index} ];
 
     if ( !defined $self->{update_sth} ) {
-        $self->{update_sth} =
-          $self->{dbh}->prepare_cached( "UPDATE $self->{table_name} SET "
-              . join( ' = ?, ', 'a_session', @$index )
-              . ' = ? WHERE id = ?' );
+        $self->{update_sth} = $self->{dbh}->prepare_cached(
+                'UPDATE '
+              . $self->_quoteTable( $self->{table_name} ) . ' SET '
+              . join( ' = ?, ',
+                'a_session', map { $self->_quoteColumn($_) } @$index )
+              . ' = ? WHERE id = ?'
+        );
     }
 
     $self->{update_sth}->bind_param( 1, $session->{serialized} );
@@ -70,6 +74,21 @@ sub update {
     $self->{update_sth}->execute;
 
     $self->{update_sth}->finish;
+}
+
+# Table name and columns of indexed fields in SQL queries, see
+# Apache::Session::Browseable::_common::_quoteIdentifier(). Stores that need
+# another quoting override them
+sub _quoteTable {
+    my ( $self, $name ) = @_;
+    return Apache::Session::Browseable::_common->_quoteIdentifier( $self->{dbh},
+        $name );
+}
+
+sub _quoteColumn {
+    my ( $self, $field ) = @_;
+    return Apache::Session::Browseable::_common->_quoteIdentifier( $self->{dbh},
+        $field );
 }
 
 1;
