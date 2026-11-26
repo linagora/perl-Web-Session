@@ -88,6 +88,7 @@ jobs:
         run: |
           perl Build.PL
           ./Build
+          PERL_JSON_BACKEND=JSON::PP ./Build test
           ./Build test
       - name: Run MariaDB tests with other MariaDB versions/drivers
         env:

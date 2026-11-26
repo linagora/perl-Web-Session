@@ -20,7 +20,8 @@ sub populate {
     $self->{generate}     = \&Apache::Session::Generate::SHA256::generate;
     $self->{validate}     = \&Apache::Session::Generate::SHA256::validate;
     $self->{serialize}    = \&Apache::Session::Serialize::JSON::serializeLatin1;
-    $self->{unserialize}  = \&Apache::Session::Serialize::JSON::unserialize;
+    $self->{unserialize} =
+      \&Apache::Session::Serialize::JSON::unserializeLatin1;
 
     return $self;
 }
@@ -48,7 +49,7 @@ sub _exprPatterns {
 sub unserialize {
     my $session = shift;
     my $tmp     = { serialized => $session };
-    Apache::Session::Serialize::JSON::unserialize($tmp);
+    Apache::Session::Serialize::JSON::unserializeLatin1($tmp);
     return $tmp->{data};
 }
 
@@ -691,6 +692,12 @@ holding only Latin-1 characters. Index set names (C<field_value>) are sent as
 Latin-1 bytes when they can be, so existing sets keep working, and as UTF-8
 bytes otherwise. The name of a value above U+00FF may then be the same as the
 Latin-1 name of another value (C<uid_\x{3a9}> and C<uid_\x{ce}\x{a9}>).
+
+Index sets are updated after the session is written, without a transaction.
+If the same session is updated concurrently by two processes, a stale member
+can remain in the index set of a previous value. C<searchOn> only removes
+members whose session no longer exists and doesn't check the indexed value
+again, so such a session may be returned for a value it no longer has.
 
 =head1 SEE ALSO
 
