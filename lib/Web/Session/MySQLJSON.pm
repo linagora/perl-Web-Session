@@ -9,6 +9,7 @@ use Web::Session::Store::MySQL;
 use Web::Session::Generate::SHA256;
 use Web::Session::Serialize::JSON;
 use Web::Session::DBI;
+use Web::Session::_common;
 
 our $VERSION = '1.0.0';
 our @ISA     = qw(Web::Session::DBI Apache::Session);
@@ -312,7 +313,10 @@ sub _classDbh {
     my $password   = $args->{Password};
     my $dbh =
       DBI->connect_cached( $datasource, $username, $password,
-        { RaiseError => 1, AutoCommit => 1 } )
+        Web::Session::_common->_forkSafeAttr(
+            { RaiseError => 1, AutoCommit => 1 }
+        )
+      )
       || die $DBI::errstr;
 
     # DBD::MariaDB always uses UTF-8

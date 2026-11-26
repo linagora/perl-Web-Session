@@ -41,6 +41,7 @@ t/test-browseable-functions-using-SQLite.t
 t/test-sql-functions-using-SQLite.t
 t/Web-Session-aliases.t
 t/Web-Session-Cassandra.t
+t/Web-Session-classDbh-fork.t
 t/Web-Session-common.t
 t/Web-Session-DBI.t
 t/Web-Session-File.t
