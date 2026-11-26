@@ -130,6 +130,9 @@ Sessions without the field are never returned, as with the other backends of
 this distribution. This differs from the Perl fallback of Lemonldap::NG,
 where a missing field is compared as 0.
 
+The connection is kept open between sessions. Set C<noreuse =E<gt> 1> to open
+and close one for each session, see L<Apache::Session::Browseable/"PERSISTENT DATABASE CONNECTIONS">.
+
 =head1 SEE ALSO
 
 L<Apache::Session>, L<Apache::Session::DBI>

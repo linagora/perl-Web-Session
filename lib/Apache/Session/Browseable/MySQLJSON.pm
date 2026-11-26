@@ -477,6 +477,12 @@ timestamps are positive integers.
 This module isn't usable with MariaDB: use
 L<Apache::Session::Browseable::MariaDBJSON> instead.
 
+=head2 Persistent connection
+
+The database connection is kept open between sessions. Set
+C<noreuse =E<gt> 1> to open and close one for each session, see
+L<Apache::Session::Browseable/"PERSISTENT DATABASE CONNECTIONS">.
+
 =head1 SEE ALSO
 
 L<Apache::Session>, L<Apache::Session::Browseable::MySQL>,

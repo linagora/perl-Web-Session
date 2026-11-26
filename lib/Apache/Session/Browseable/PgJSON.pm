@@ -505,6 +505,12 @@ fallback of Lemonldap::NG, where a missing field is compared as 0: searchLt()
 would then return nearly all sessions. Lemonldap::NG doesn't need them: its
 sessions purge ignores sessions without C<_oidcRtUpdate>.
 
+=head2 Persistent connection
+
+The database connection is kept open between sessions. Set
+C<noreuse =E<gt> 1> to open and close one for each session, see
+L<Apache::Session::Browseable/"PERSISTENT DATABASE CONNECTIONS">.
+
 =head1 SEE ALSO
 
 L<http://lemonldap-ng.org>, L<Apache::Session::Postgres>

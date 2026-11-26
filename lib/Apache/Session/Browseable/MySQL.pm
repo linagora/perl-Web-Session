@@ -186,6 +186,12 @@ B<Note>: if you add a column to C<Index> on a table that already contains
 sessions, backfill it before relying on it (see "ADDING A COLUMN TO Index ON AN
 EXISTING TABLE" in L<Apache::Session::Browseable>).
 
+=head2 Persistent connection
+
+The database connection is kept open between sessions. Set
+C<noreuse =E<gt> 1> to open and close one for each session, see
+L<Apache::Session::Browseable/"PERSISTENT DATABASE CONNECTIONS">.
+
 =head1 SEE ALSO
 
 L<Apache::Session>

@@ -9,6 +9,14 @@ our @ISA =
   qw(Apache::Session::Browseable::Store::DBI Apache::Session::Store::Oracle);
 our $VERSION = '1.2.2';
 
+sub connection {
+    my ( $self, $session ) = @_;
+
+    # AutoCommit off: see "Why AutoCommit differs" in Store/DBI.pm
+    $self->_connection( $session, 'Apache::Session::Store::Oracle',
+        { RaiseError => 1, AutoCommit => 0 } );
+}
+
 # Oracle rejects unquoted identifiers starting with "_" (_whatToTrace,
 # _utime...) and reserved words (uid): index columns are double-quoted, so
 # their name is case sensitive. id and a_session stay unquoted. Oracle
