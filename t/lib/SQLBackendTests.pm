@@ -799,7 +799,9 @@ sub run_tests {
         deleteBatches => sub {
             local $Web::Session::_common::BatchSize = 2;
             foreach my $count ( 4, 5, 7 ) {
-                $reset->();
+
+                # Empty table: $reset adds the default sessions
+                $dbh->do("DELETE FROM $table");
                 $newSession->( uid => "old$_", _utime => 100 + $_ )
                   foreach ( 1 .. $count );
                 $newSession->( uid => 'recent', _utime => 100_000 );
