@@ -70,6 +70,19 @@ sub _removeOrphan {
     }
 }
 
+# Value of key $k and a flag set if it isn't a string (WRONGTYPE: another
+# application's key, kept in the index). Other Redis errors are fatal: an
+# empty result would be taken for "no session"
+sub _getString {
+    my ( $redisObj, $k ) = @_;
+    my $v = eval { $redisObj->get($k) };
+    if ($@) {
+        die $@ unless ( $@ =~ /WRONGTYPE/ );
+        return ( undef, 1 );
+    }
+    return ( $v, 0 );
+}
+
 sub searchOn {
     my ( $class, $args, $selectField, $value, @fields ) = @_;
 
@@ -78,12 +91,17 @@ sub searchOn {
 
         my $redisObj  = $class->_getRedis($args);
         my $index_key = "${selectField}_$value";
-        my @keys      = $redisObj->smembers($index_key);
+        my @keys      = eval { $redisObj->smembers($index_key) };
+        if ($@) {
+            die $@ unless ( $@ =~ /WRONGTYPE/ );
+            @keys = ();
+        }
         foreach my $k (@keys) {
 
             # Members of another application are neither read nor removed
             next unless ( $k and $class->isLlngKey( $args, $k ) );
-            my $tmp = $redisObj->get($k);
+            my ( $tmp, $wrongType ) = _getString( $redisObj, $k );
+            next if ($wrongType);
             unless ($tmp) {
                 # Lazy cleanup: remove orphan from index
                 $class->_removeOrphan( $redisObj, $index_key, $k );
@@ -174,21 +192,27 @@ sub searchOnExpr {
                     # Members of another application are neither read nor
                     # removed
                     next unless ( $k and $class->isLlngKey( $args, $k ) );
-                    my $v = $redisObj->get($k);
+                    my ( $v, $wrongType ) = _getString( $redisObj, $k );
+                    next if ($wrongType);
                     unless ($v) {
                         # Lazy cleanup: remove orphan from index
                         $class->_removeOrphan( $redisObj, $set, $k );
                         next;
                     }
-                    my $tmp = unserialize($v);
+                    my $tmp = eval { unserialize($v) };
+                    if ( $@ or ref($tmp) ne 'HASH' ) {
+                        print STDERR "Error in session $k: "
+                          . ( $@ || "not a session\n" );
+                        next;
+                    }
 
                     # The pattern may match sets of another field
-                    if (    $tmp
-                        and defined $tmp->{$selectField}
+                    unless ( defined $tmp->{$selectField}
                         and $tmp->{$selectField} =~ $re )
                     {
-                        $res{$k} = $class->extractFields( $tmp, @fields );
+                        next;
                     }
+                    $res{$k} = $class->extractFields( $tmp, @fields );
                 }
             }
             $cursor = $new_cursor;
