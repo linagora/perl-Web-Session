@@ -506,9 +506,13 @@ indexes of the features you don't use, and drop the ones that are never used
   -- Purge with "timeoutActivity"
   CREATE INDEX ls1  ON sessions
     ( ( cast(a_session ->> '_lastSeen' AS bigint) ) );
-  -- Single session with "singleIP", explorer by IP address
+  -- Session explorer by IP address (prefix searches), single session with
+  -- "singleIP"
   CREATE INDEX ip1  ON sessions USING BTREE
     ( (a_session ->> 'ipAddr') text_pattern_ops );
+  -- Session explorer by start date (prefix searches)
+  CREATE INDEX st1  ON sessions USING BTREE
+    ( (a_session ->> '_startTime') text_pattern_ops );
   -- Trusted browser plugin
   CREATE INDEX tb1  ON sessions ( (a_session ->> '_session_uid') );
   -- Password reset by mail, certificate reset
@@ -519,8 +523,11 @@ indexes of the features you don't use, and drop the ones that are never used
   CREATE INDEX osub ON sessions ( (a_session ->> '_oidc_sub') );
 
 C<uid1> assumes that C<whatToTrace> is C<_whatToTrace> (the default); index
-the field it names otherwise. The explorer searches with C<LIKE 'prefix%'>,
-hence C<text_pattern_ops> (see L</SYNOPSIS>).
+the field it names otherwise. The session explorer browses users, IP
+addresses and dates by prefix (C<LIKE 'prefix%'>), hence C<text_pattern_ops>:
+with a collation other than "C", a plain btree index can't serve these
+searches, and C<pg_stat_user_indexes> then shows it unused (see
+L</SYNOPSIS>).
 
 =head2 OpenID Connect sessions (oidcStorage)
 
@@ -541,11 +548,11 @@ is set (else they are in the sessions table, which then needs these indexes):
 
 =head2 Persistent sessions (persistentStorage)
 
-One row per user, read by its id: the table stays small and needs no index
-for Lemonldap::NG itself. To search it by user (C<_session_uid>, which
-Lemonldap::NG sets in every persistent session):
+One row per user, read by its id: the table stays small. The persistent
+sessions explorer of the manager browses it by C<_session_uid> prefix:
 
-  CREATE INDEX p_uid ON psessions ( (a_session ->> '_session_uid') );
+  CREATE INDEX p_uid ON psessions USING BTREE
+    ( (a_session ->> '_session_uid') text_pattern_ops );
 
 =head2 SAML sessions (samlStorage)
 
