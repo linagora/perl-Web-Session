@@ -59,17 +59,11 @@ sub _searchCompare {
     $value = $class->_checkSearchValue( $op, $value );
     return {} unless ( defined $value );
 
-    unless ( $class->_fieldIsIndexed( $args, $selectField ) ) {
-        return $class->_searchByTest(
-            $args,
-            $selectField,
-            sub {
-                defined( $_[0] )
-                  and ( $op eq '<' ? $_[0] < $value : $_[0] > $value );
-            },
-            @fields
-        );
-    }
+    my $scan = sub {
+        $class->_searchByTest( $args, $selectField,
+            $class->_compareTest( $op, $value ), @fields );
+    };
+    return $scan->() unless ( $class->_fieldIsIndexed( $args, $selectField ) );
     return $class->_searchQuery(
         $op,
         sub {
@@ -79,7 +73,8 @@ sub _searchCompare {
                 $op, $value );
             $class->_query( $args, $selectField, $value,
                 { query => $query, values => [] }, @fields );
-        }
+        },
+        $scan
     );
 }
 

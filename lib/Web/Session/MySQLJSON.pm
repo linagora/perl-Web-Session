@@ -67,15 +67,22 @@ sub _searchCompare {
     my ( $class, $op, $args, $selectField, $value, @fields ) = @_;
     $value = $class->_checkSearchValue( $op, $value );
     return {} unless ( defined $value );
-    my $dbh   = $class->_classDbh($args);
-    my $query = {
-        query => $class->_buildCompareExpression(
-            $selectField, $op, $value, $dbh, $args
-        ),
-        values => []
-    };
-    return $class->_searchQuery( $op,
-        sub { $class->_query( $args, $query, @fields ) } );
+    return $class->_searchQuery(
+        $op,
+        sub {
+            my $query = {
+                query => $class->_buildCompareExpression(
+                    $selectField, $op, $value, $class->_classDbh($args), $args
+                ),
+                values => []
+            };
+            $class->_query( $args, $query, @fields );
+        },
+        sub {
+            $class->_searchByTest( $args, $selectField,
+                $class->_compareTest( $op, $value ), @fields );
+        }
+    );
 }
 
 sub _query {

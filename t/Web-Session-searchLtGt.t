@@ -119,6 +119,62 @@ foreach (@tests) {
     }
 }
 
+# The SQL query fails (in PostgreSQL, the cast of a value that isn't an
+# integer, for example): the error is printed and the sessions are compared
+# in Perl, as the generic search of Lemonldap::NG does. Nothing if reading
+# the sessions fails too
+foreach (@tests) {
+    my ( $backend, undef, $args ) = @$_;
+    $args ||= {};
+    my $class = "Web::Session::$backend";
+    my $desc  = $backend . ( $args->{Index} ? ' (indexed)' : '' );
+  SKIP: {
+        skip "$class can't be loaded", 6 unless ( eval "require $class" );
+        no strict 'refs';
+        no warnings 'redefine';
+        my $scanFails;
+        local *{"${class}::_classDbh"} = sub { FakeDbh->new };
+        local *{"${class}::_query"}    = sub { die "query failed\n" };
+        local *{"${class}::get_key_from_all_sessions"} = sub {
+            my ( $c, $args, $sub ) = @_;
+            die "scan failed\n" if ($scanFails);
+            $sub->( $sessions{$_}, $_ ) foreach ( sort keys %sessions );
+            return {};
+        };
+        foreach ( [ searchLt => [qw(s1 s3)] ], [ searchGt => ['s2'] ] ) {
+            my ( $m, $expected ) = @$_;
+            my $err = '';
+            my $res;
+            {
+                local *STDERR;
+                open STDERR, '>', \$err;
+                $res = $class->$m( $args, '_oidcRtUpdate', 150 );
+            }
+            is_deeply( [ sort keys %$res ],
+                $expected, "$desc: failed $m query, compared in Perl" );
+            is(
+                $err,
+                "$m: query failed\n$m: comparing all sessions in Perl instead\n",
+                "$desc: failed $m query: errors printed"
+            );
+        }
+        $scanFails = 1;
+        my $err = '';
+        my $res;
+        {
+            local *STDERR;
+            open STDERR, '>', \$err;
+            $res = $class->searchLt( $args, '_oidcRtUpdate', 150 );
+        }
+        is_deeply( $res, {}, "$desc: query and scan fail: nothing" );
+        like(
+            $err,
+            qr/searchLt: scan failed\n\z/,
+            "$desc: query and scan fail: errors printed"
+        );
+    }
+}
+
 # Perl comparison: "inf" and "nan" are 0 as in SQL, not Infinity and NaN
 foreach my $backend (qw(SQLite Cassandra)) {
     my $class = "Web::Session::$backend";
