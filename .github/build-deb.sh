@@ -3,8 +3,8 @@
 # Builds libweb-session-perl_X.Y.Z-1_all.deb in the current directory with
 # dh-make-perl, from the given distribution or, without argument, from a
 # distribution built from the current checkout. Installs the packaging tools
-# with apt-get: run it as root in a Debian container (see the deb jobs of
-# .github/workflows).
+# with apt-get: run it as root in a Debian container (see the deb job of
+# .github/workflows/release.yml).
 
 set -eu
 

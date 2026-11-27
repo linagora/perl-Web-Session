@@ -30,8 +30,8 @@ and:
   perl .github/check-version.pl vX.Y.Z
   ```
 
-Open the pull request. Its CI checks the versions, runs the tests against the
-database servers and builds the Debian package. Merge it once it passes.
+Open the pull request. Its CI checks the versions and runs the tests against
+the database servers. Merge it once it passes.
 
 ## 2. Tag
 
