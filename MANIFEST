@@ -54,6 +54,7 @@ t/Web-Session-MariaDBJSON-index.t
 t/Web-Session-MariaDBJSON.t
 t/Web-Session-MySQLJSON-populate.t
 t/Web-Session-MySQLJSON.t
+t/Web-Session-Patroni-pool.t
 t/Web-Session-Patroni.t
 t/Web-Session-PgJSON-classPool-fork.t
 t/Web-Session-PgJSON-classPool.t
@@ -81,6 +82,7 @@ t/Web-Session-Store-File.t
 t/Web-Session-Store-fork.t
 t/Web-Session-Store-MariaDBJSON.t
 t/Web-Session-Store-MySQL.t
+t/Web-Session-Store-Patroni-pool.t
 t/Web-Session-Store-Patroni.t
 t/Web-Session-Store-Postgres-pool.t
 t/Web-Session-Store-Redis.t

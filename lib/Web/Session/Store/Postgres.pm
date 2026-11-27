@@ -25,15 +25,21 @@ our $VERSION = '1.0.0';
 # rolled back at untie), which the pool, where each statement commits
 # itself, can't do: connect_cached() is kept.
 #
-# In the pool, each statement is its own transaction (AutoCommit): the store
-# reads without a lock (Apache::Session::Store::DBI's materialize, no FOR
-# UPDATE; the lock manager is Null), so a transaction around a tie protected
-# nothing and cost a BEGIN and a COMMIT round trip each.
+# In the pool, each statement of this store is its own transaction
+# (AutoCommit): it reads without a lock (Apache::Session::Store::DBI's
+# materialize, no FOR UPDATE; the lock manager is Null), so a transaction
+# around a tie protected nothing and cost a BEGIN and a COMMIT round trip
+# each. The Patroni store, whose materialize() locks the row, opens a
+# transaction per tie on its pooled connection; _giveBack() never keeps a
+# connection inside a transaction.
 #
 # With the same arguments, the class methods of Web::Session::PgJSON borrow
 # a connection of this pool for the duration of each call (see _lend()), so
 # that a process using both sessions and class methods doesn't keep one more
 # connection for the latter.
+# Times the idle connections of a data source were dropped by _dropIdle():
+# a connection lent before the last drop is closed when given back
+our %DROPS;    # "datasource\0user" => count
 our %IDLE;   # "datasource\0user" => [ [ $dbh, $since ], ... ]
 
 # Defaults of the MaxIdle, IdleTimeout and MaxLifetime arguments
@@ -103,11 +109,14 @@ sub _commit {
 }
 
 # Whether the pool applies to these arguments: KeepConnections not disabled,
-# writes committed (see _commit()), no noreuse, no Handle. Shared by
-# connection() and by the class methods of Web::Session::PgJSON (see
-# _lend()), so that both stay consistent
+# writes committed, no noreuse, no Handle. $commit is the commit policy of
+# the store, _commit($args) by default (the Patroni store has its own, see
+# Store/Patroni.pm). Shared by connection(), by the Patroni store and by the
+# class methods of Web::Session::PgJSON (see _lend()), so that they stay
+# consistent
 sub _poolApplies {
-    my ($args) = @_;
+    my ( $args, $commit ) = @_;
+    $commit = _commit($args) if ( @_ < 2 );
 
     # KeepConnections is on unless explicitly disabled: a missing or empty
     # value (configuration interfaces may store an empty option as '') keeps
@@ -115,24 +124,34 @@ sub _poolApplies {
     my $keep = $args->{KeepConnections};
     $keep = 1 unless ( defined $keep and $keep ne '' );
     return (  $keep
-          and _commit($args)
+          and $commit
           and !$args->{noreuse}
           and !exists $args->{Handle} ) ? 1 : 0;
 }
 
-# Takes a connection of the pool of $args, an idle one if possible, a new one
-# otherwise. Lent means removed from the idle ones: a connection is never lent
+# Key of the idle connections of a data source in %IDLE
+sub _poolKey {
+    my ( $datasource, $username ) = @_;
+    return join "\0", $datasource // '', $username // '';
+}
+
+# Takes a connection to $datasource as $username of the pool, an idle one if
+# possible, a new one otherwise. Without $datasource, connects to the data
+# source of $args; $args also gives the MaxIdle, IdleTimeout and MaxLifetime
+# options. Lent means removed from the idle ones: a connection is never lent
 # twice at once. Returns the handle and what _giveBack() needs:
 # { dbh, pool_key, pool_maxidle, pool_idle, pool_maxlife }
 sub _borrow {
-    my ($args) = @_;
-    my $datasource = $args->{DataSource}
-      || $Apache::Session::Store::Postgres::DataSource;
-    my $username = $args->{UserName}
-      || $Apache::Session::Store::Postgres::UserName;
-    my $password = $args->{Password}
-      || $Apache::Session::Store::Postgres::Password;
-    my $key         = join "\0", $datasource // '', $username // '';
+    my ( $args, $datasource, $username, $password ) = @_;
+    if ( @_ < 2 ) {
+        $datasource = $args->{DataSource}
+          || $Apache::Session::Store::Postgres::DataSource;
+        $username = $args->{UserName}
+          || $Apache::Session::Store::Postgres::UserName;
+        $password = $args->{Password}
+          || $Apache::Session::Store::Postgres::Password;
+    }
+    my $key         = _poolKey( $datasource, $username );
     my $idleTimeout = _intArg( $args, 'IdleTimeout', $IDLE_TIMEOUT );
     my $maxLifetime = _intArg( $args, 'MaxLifetime', $MAX_LIFETIME );
     my $now         = time;
@@ -175,14 +194,44 @@ sub _borrow {
     return {
         dbh          => $dbh,
         pool_key     => $key,
+        pool_drops   => $DROPS{$key} // 0,
         pool_maxidle => _intArg( $args, 'MaxIdle', $MAX_IDLE ),
         pool_idle    => $idleTimeout,
         pool_maxlife => $maxLifetime,
     };
 }
 
+# Lends to the store $self a connection to $datasource as $username (see
+# _borrow()), given back by _giveBack() from DESTROY. The Patroni store calls
+# it (as a fully qualified method, it doesn't inherit from this class) with
+# the DSN of the primary it found.
+sub _pooledConnection {
+    my ( $self, $datasource, $username, $password, $args ) = @_;
+    my $loan = _borrow( $args, $datasource, $username, $password );
+    $self->{$_} = $loan->{$_} foreach ( keys %$loan );
+    $self->{disconnect} = 0;
+}
+
+# Closes the idle connections of this process to the data source of key $key
+# (see _poolKey()); those lent at this time are closed when given back. The
+# Patroni store drops those to a former primary
+sub _dropIdle {
+    my ($key) = @_;
+    $DROPS{$key}++;
+    my $idle = delete $IDLE{$key} or return;
+    local $@;
+    foreach (@$idle) {
+        my $h = $_->[0];
+
+        # Inherited from a parent process: left to it (AutoInactiveDestroy)
+        eval { $h->disconnect }
+          if ( $h->{Active} and $h->{private_ws_pid} == $$ );
+    }
+}
+
 # Gives back the connection $loan->{dbh} taken by _borrow(). $loan is a store
-# or a Web::Session::Store::Postgres::Loan
+# or a Web::Session::Store::Postgres::Loan (a plain function: the Patroni
+# store calls it as a fully qualified method)
 sub _giveBack {
     my ($loan) = @_;
     my $key = $loan->{pool_key};
@@ -196,8 +245,10 @@ sub _giveBack {
     # Neither given back nor closed here (AutoInactiveDestroy)
     return if ( $dbh->{private_ws_pid} != $$ );
 
-    # Each statement committed itself (AutoCommit): the connection goes back
-    # to the idle ones, unless it met an error or is too old. Expired idle
+    # The connection goes back to the idle ones with AutoCommit on (no
+    # transaction left open, see the Patroni store), unless it met an error,
+    # is too old or was lent before its data source was dropped (a former
+    # Patroni primary). Expired idle
     # connections (at the bottom of the stack, never reached when the pool
     # stays busy) are closed now
     my $now  = time;
@@ -218,6 +269,8 @@ sub _giveBack {
     } @$idle;
     if (    !$dbh->{private_ws_error}
         and $dbh->{Active}
+        and $dbh->{AutoCommit}
+        and ( $DROPS{$key} // 0 ) == ( $loan->{pool_drops} // 0 )
         and $now - $dbh->{private_ws_born} <= $loan->{pool_maxlife}
         and @$idle < $loan->{pool_maxidle} )
     {

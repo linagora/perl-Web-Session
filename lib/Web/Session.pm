@@ -42,12 +42,13 @@ and reconnects if the connection was lost. It is opened with the attributes
 that these backends always used (C<AutoCommit> in particular) and gets the
 same flags (C<pg_enable_utf8>, C<mysql_enable_utf8>, C<sqlite_unicode>).
 
-PostgreSQL backends (PgJSON and its Postgres alias, not Patroni) use a pool
-of connections instead, unless C<Commit> is set to 0: each connection is lent
-to one session at a time, so sessions tied together never share a
-transaction, with error handling, idle timeouts and fork safety. Their class
-methods borrow connections of the same pool for the duration of each call.
-See "Connection pool (KeepConnections)" in L<Web::Session::PgJSON>;
+PostgreSQL backends (PgJSON and its Postgres alias, and Patroni) use a pool
+of connections instead, unless C<Commit> is set to 0 (they all set it by
+default): each connection is lent to one session at a time, so sessions tied
+together never share a transaction, with error handling, idle timeouts and
+fork safety. Class methods of PgJSON borrow connections of the same pool for
+the duration of each call. See "Connection pool (KeepConnections)" in
+L<Web::Session::PgJSON> and "Connection pool" in L<Web::Session::Patroni>;
 C<KeepConnections =E<gt> 0> gives back the C<connect_cached()> handle
 described here.
 
@@ -97,12 +98,14 @@ connection).
 
 =item *
 
-Backends that use transactions (C<AutoCommit> off: Patroni, SQLite, and
-PgJSON outside its pool) end the transaction each time a session is untied,
-even after a failure: it is committed if C<Commit> is set, rolled back
-otherwise. PgJSON, Patroni and SQLite set C<Commit> by default when no
-C<Handle> is given. No transaction, and so no row lock taken by a write,
-stays open on the connection.
+Backends that use transactions (SQLite, Patroni, and PgJSON outside its
+pool) end the transaction each time a session is untied, even after a
+failure: it is committed if C<Commit> is set, rolled back otherwise. PgJSON,
+Patroni and SQLite set C<Commit> by default when no C<Handle> is given. No
+transaction, and so no row lock, stays open on the connection after untie.
+Patroni reads a session with C<SELECT ... FOR UPDATE>: its row stays locked
+from the tie to the untie, so two processes updating the same session wait
+for each other.
 
 =item *
 
@@ -110,7 +113,7 @@ Sessions tied at the same time in a process share the connection, and so the
 transaction: untying one of them also commits (or rolls back) the changes
 already done in the others. Use C<noreuse> if you need to keep several
 sessions tied at once with independent transactions. This doesn't apply to
-the PostgreSQL pool (PgJSON and Postgres), which lends a
+the PostgreSQL pool (PgJSON, Postgres and Patroni), which lends a
 connection to one session at a time.
 
 =item *
