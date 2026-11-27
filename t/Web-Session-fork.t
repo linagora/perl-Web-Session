@@ -10,11 +10,13 @@ plan skip_all => 'DBD::SQLite is needed for this test'
   unless eval { require DBI; require DBD::SQLite; 1 };
 
 # A real fork(): the parent has a session tied (so a connected store) and has
-# called a class method when it forks. The child unties a modified copy of the
-# session and calls the class method again: it must use handles of its own,
-# and the parent's handles must still work after the child exits. PostgreSQL
-# also checks that the child doesn't close the parent's connection on the
-# server (AutoInactiveDestroy); SQLite has no server connection
+# called a class method when it forks. The child uses its copy of the session
+# and calls the class method again: it must use handles of its own, and the
+# parent's handles must still work after the child exits. PostgreSQL also
+# checks that the child doesn't close the parent's connection on the server
+# (AutoInactiveDestroy); SQLite has no server connection. Using in the child a
+# session tied before the fork is not supported (see Web::Session): the
+# parent commits its transaction first, only the handles are checked here
 
 sub forkTest {
     my ( $name, $class, $args ) = @_;
@@ -36,8 +38,8 @@ sub forkTest {
     ok( $parentDbh, "$name: parent store connected" );
     my $classDbh = $class->_classDbh($args);
 
-    # The read transaction of the tie would lock SQLite against the child's
-    # write. The store stays connected
+    # Else the child wouldn't see the parent's transaction, and SQLite would
+    # lock it out. The store stays connected
     $parentDbh->commit unless ( $parentDbh->{AutoCommit} );
 
     pipe( my $read, my $write ) or die "pipe: $!";

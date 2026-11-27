@@ -73,15 +73,16 @@ processes, or use C<noreuse>.
 =item *
 
 These connections are fork safe: a child created by C<fork()> (a pre-fork
-server starting its workers, for example) opens its own connection, and
-neither uses nor closes the connections of its parent. This also applies to a
-session tied before the fork and used or untied in the child: the child
-writes it through its own connection, and doesn't commit nor roll back the
-parent's transaction. It doesn't apply to connections the store doesn't
-share, with C<noreuse> or a C<Handle> argument: as with
-Apache::Session::Browseable, a session tied before the fork must then not be
-used in the child, and the child must not destroy it (it would close or
-commit the parent's connection).
+server starting its workers, for example) opens its own connection, and never
+uses, closes, commits nor rolls back a connection of its parent, even one held
+by a session tied before the fork. Such a session must still be untied in the
+process that tied it; using it in the child is not supported, because the
+parent's transaction (not committed yet, with the row of a new session or its
+lock with Patroni) is invisible to the child or blocks it. With C<noreuse> or
+a C<Handle> argument, the connection isn't shared and this protection doesn't
+apply: as with Apache::Session::Browseable, the child must not even destroy a
+session tied before the fork (it would close or commit the parent's
+connection).
 
 =item *
 
