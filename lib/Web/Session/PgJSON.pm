@@ -425,7 +425,9 @@ Create table:
 C<UNLOGGED> tables are lost on a crash and not replicated to standby servers:
 see L</POSTGRESQL TUNING>.
 
-Optionally, add indexes on some fields. Example for Lemonldap::NG:
+Optionally, add indexes on some fields. Example for the sessions table of
+Lemonldap::NG (see L</INDEXES FOR LEMONLDAP::NG> for its other tables and
+features):
 
   CREATE INDEX uid1 ON sessions USING BTREE
     ( (a_session ->> '_whatToTrace') text_pattern_ops );
@@ -475,6 +477,93 @@ sessions and add the capability to index some fields to make research faster.
 Web::Session::PgJSON implements it for PosqtgreSQL databases
 using "json" or "jsonb" type to be able to browse sessions. The C<GinIndex>
 option requires "jsonb".
+
+=head1 INDEXES FOR LEMONLDAP::NG
+
+Lemonldap::NG stores each kind of session in its own table (C<globalStorage>,
+C<oidcStorage>, C<persistentStorage>, C<samlStorage>, C<casStorage>), and
+searches each table on a few fields. A search on a field without index reads
+the whole table: on a busy portal, the OpenID Connect table easily holds
+hundreds of thousands of rows. Create the indexes of the features you use,
+with exactly the expressions below (C<a_session -E<gt>E<gt> 'field'>, and the
+C<cast(... AS bigint)> of the purge), else PostgreSQL can't use them. On a
+table in production, add C<CONCURRENTLY> (C<CREATE INDEX CONCURRENTLY>) to
+build an index without blocking the writes.
+
+Each index costs on every update: an update changing the session writes into
+every index of the table (see L</Updates and autovacuum>). Don't create the
+indexes of the features you don't use, and drop the ones that are never used
+(C<idx_scan> stays at 0 in C<pg_stat_user_indexes>).
+
+=head2 Sessions (globalStorage)
+
+  -- Purge (deleteIfLowerThan) and session explorer
+  CREATE INDEX u1   ON sessions ( ( cast(a_session ->> '_utime' AS bigint) ) );
+  CREATE INDEX s1   ON sessions ( (a_session ->> '_session_kind') );
+  -- whatToTrace: explorer, CheckUser, global logout, refresh, single session
+  CREATE INDEX uid1 ON sessions USING BTREE
+    ( (a_session ->> '_whatToTrace') text_pattern_ops );
+  -- Purge with "timeoutActivity"
+  CREATE INDEX ls1  ON sessions
+    ( ( cast(a_session ->> '_lastSeen' AS bigint) ) );
+  -- Single session with "singleIP", explorer by IP address
+  CREATE INDEX ip1  ON sessions USING BTREE
+    ( (a_session ->> 'ipAddr') text_pattern_ops );
+  -- Trusted browser plugin
+  CREATE INDEX tb1  ON sessions ( (a_session ->> '_session_uid') );
+  -- Password reset by mail, certificate reset
+  CREATE INDEX us1  ON sessions ( (a_session ->> 'user') );
+  CREATE INDEX ml1  ON sessions ( (a_session ->> 'mail') );
+  -- Lemonldap::NG as OpenID Connect relying party: logout from the provider
+  CREATE INDEX osid ON sessions ( (a_session ->> '_oidc_sid') );
+  CREATE INDEX osub ON sessions ( (a_session ->> '_oidc_sub') );
+
+C<uid1> assumes that C<whatToTrace> is C<_whatToTrace> (the default); index
+the field it names otherwise. The explorer searches with C<LIKE 'prefix%'>,
+hence C<text_pattern_ops> (see L</SYNOPSIS>).
+
+=head2 OpenID Connect sessions (oidcStorage)
+
+Authorization codes, access tokens and refresh tokens, when C<oidcStorage>
+is set (else they are in the sessions table, which then needs these indexes):
+
+  -- Purge
+  CREATE INDEX o_u1  ON oidcsessions
+    ( ( cast(a_session ->> '_utime' AS bigint) ) );
+  -- Tokens of a session, updated at each upgrade of the session (second
+  -- factor, authentication level...)
+  CREATE INDEX o_usi ON oidcsessions ( (a_session ->> 'user_session_id') );
+  -- Offline tokens plugin, deletion of a session in the manager
+  CREATE INDEX o_uid ON oidcsessions ( (a_session ->> '_whatToTrace') );
+  -- Relying parties with a refresh token activity timeout
+  CREATE INDEX o_rt1 ON oidcsessions
+    ( ( cast(a_session ->> '_oidcRtUpdate' AS bigint) ) );
+
+=head2 Persistent sessions (persistentStorage)
+
+One row per user, read by its id: the table stays small and needs no index
+for Lemonldap::NG itself. To search it by user (C<_session_uid>, which
+Lemonldap::NG sets in every persistent session):
+
+  CREATE INDEX p_uid ON psessions ( (a_session ->> '_session_uid') );
+
+=head2 SAML sessions (samlStorage)
+
+  CREATE INDEX a_u1     ON samlsessions
+    ( ( cast(a_session ->> '_utime' AS bigint) ) );
+  CREATE INDEX a_samlid ON samlsessions ( (a_session ->> '_saml_id') );
+
+and, depending on the SAML features used: C<_nameID> and C<_assert_id>
+(logout and assertion queries), C<_art_id> (artifact binding), C<ProxyID>
+(SAML proxy).
+
+=head2 CAS sessions (casStorage)
+
+  CREATE INDEX c_u1    ON cassessions
+    ( ( cast(a_session ->> '_utime' AS bigint) ) );
+  CREATE INDEX c_casid ON cassessions ( (a_session ->> '_cas_id') );
+  -- CAS proxy tickets
+  CREATE INDEX c_pgt   ON cassessions ( (a_session ->> 'pgtIou') );
 
 =head1 GIN INDEX
 
