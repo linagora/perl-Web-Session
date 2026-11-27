@@ -40,7 +40,7 @@ sub connection {
     }
 
     my $datasource = $session->{args}->{DataSource}
-      || $Apache::Session::Store::MySQL::DataSource;
+      || $Web::Session::Store::SQLite::DataSource;
 
     # AutoCommit off: see "Why AutoCommit differs" in Store/DBI.pm
     if (
