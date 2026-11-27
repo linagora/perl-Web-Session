@@ -570,37 +570,76 @@ sessions purge ignores sessions without C<_oidcRtUpdate>.
 
 =head2 Persistent connection
 
-The database connection is kept open between sessions. Set
-C<noreuse =E<gt> 1> to open and close one for each session, see
-L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">.
+Database connections are kept open between sessions, managed by the
+connection pool described below. With C<Commit =E<gt> 0> or
+C<KeepConnections =E<gt> 0>, sessions use the handle shared by the sessions
+of the process, like the other SQL backends, see
+L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">. Set C<noreuse =E<gt> 1> to
+open and close one connection for each session instead.
 
 =head2 Connection pool (KeepConnections)
 
-With C<KeepConnections =E<gt> 1> (and C<Commit =E<gt> 1>), sessions use a pool
-of connections instead: each process keeps up to C<MaxIdle> idle connections
-per data source (C<DataSource> and C<UserName>), and lends each one to a
-single tied session at a time. So two sessions tied together (for example a
-Lemonldap::NG session and its persistent session) never share a connection
-nor a transaction. Options:
+By default, sessions use a pool of connections: each process keeps up to
+C<MaxIdle> idle connections per data source (C<DataSource> and C<UserName>),
+and lends each one to a single tied session at a time. The pool is not used
+with C<Commit =E<gt> 0>, with C<noreuse> or with a C<Handle>.
+
+Why a pool rather than the DBI C<connect_cached()> handle used by the other
+SQL backends:
+
+=over
+
+=item * Two sessions tied at the same time in a process (for example a
+Lemonldap::NG session and its persistent session) never share a connection,
+and so never a transaction. With a shared handle, they share its transaction
+(C<AutoCommit> off): untying one of them also commits (or rolls back) the
+changes already done in the other.
+
+=item * Error handling: a connection that met an error is closed, never lent
+again. For example, after a failover behind a virtual IP, a connection to the
+former primary still answers C<ping()> but every write fails.
+
+=item * Timeouts: a connection idle for too long is closed without a
+C<ping()>, which could wait for a TCP timeout on a connection dropped by a
+NAT or a load balancer; a connection is renewed after a maximum lifetime.
+
+=item * Fork safety: connections are opened with C<AutoInactiveDestroy> and
+belong to the process that opened them. A child created by C<fork()> neither
+uses nor closes the connections of its parent, even one that was lent when it
+forked.
+
+=back
+
+Options:
 
 =over
 
 =item KeepConnections
 
-Enables the pool. Ignored without C<Commit>, with C<noreuse> or with a
-C<Handle>.
+Set C<KeepConnections =E<gt> 0> to disable the pool and get back the previous
+behaviour: the handle cached by DBI C<connect_cached()>, shared by the
+sessions of the process, with C<AutoCommit> off and a transaction committed at
+untie. Accepted values: C<0> (or C<'0'>) disables the pool; a missing,
+C<undef> or empty value keeps the default (enabled); any other value enables
+it. Strings such as C<'0.0'>, C<'off'> or C<'false'> are not C<0> and so
+enable the pool: use C<0>.
 
 =item MaxIdle
 
 Idle connections kept per process and data source, 4 by default. C<0> closes
-each connection at untie.
+each connection at untie. Size the C<max_connections> of the server for all
+the processes: each one keeps up to C<MaxIdle> idle connections, plus one per
+session tied at the moment. For example, 3 servers with 50 Apache or FastCGI
+workers each and the default C<MaxIdle> may keep C<3 * 50 * 4 = 600>
+connections open, more during peaks. Lower C<MaxIdle> (1 is enough when a
+worker handles one request at a time), or put a pooler in front of the
+server (see L</Connection poolers (PgBouncer)>).
 
 =item IdleTimeout
 
 Seconds: a connection idle for longer is closed instead of being lent
-(without a C<ping()>, which could wait for a TCP timeout on a connection
-dropped by a NAT or a load balancer), 120 by default. Adding
-C<keepalives_idle> to the DSN also helps detect dead connections.
+(without a C<ping()>), 120 by default. Adding C<keepalives_idle> to the DSN
+also helps detect dead connections.
 
 =item MaxLifetime
 
@@ -611,25 +650,32 @@ default.
 
 On these connections each statement is its own transaction (C<AutoCommit>
 on): no session is locked, so a transaction around a tie protected nothing.
-A connection that met an error (for example a write on the former primary
-after a failover) is closed, never lent again. Expired idle connections are
-closed when another connection is given back. A connection given back
-recently is lent without a round trip; an older one is checked with
-C<ping()>. Connections are opened with C<AutoInactiveDestroy>: a child
-created by C<fork()> neither uses nor closes the connections of its parent,
-even one that was lent when it forked.
+Expired idle connections are closed when another connection is given back. A
+connection given back recently is lent without a round trip; an older one is
+checked with C<ping()>.
 
-Example with Lemonldap::NG:
+C<Commit> is on by default (as with L<Web::Session::Patroni>): a missing or
+empty C<Commit> commits the writes, a session isn't rolled back at untie for
+lack of this option. With C<Commit =E<gt> 0>, changes are rolled back at
+untie, which the pool can't do: the store then keeps C<AutoCommit> off on the
+shared handle. With a C<Handle>, the caller owns the transaction: C<Commit>
+is used as given (not set means not committed), as with
+L<Apache::Session::Postgres>.
+
+Example with Lemonldap::NG (the pool is used, no option needed):
 
   globalStorage        => 'Web::Session::PgJSON',
   globalStorageOptions => {
-      DataSource      => 'dbi:Pg:dbname=sessions;host=db;keepalives_idle=30',
-      UserName        => 'lemonldap',
-      Password        => 'secret',
-      TableName       => 'sessions',
-      Commit          => 1,
-      KeepConnections => 1,
+      DataSource => 'dbi:Pg:dbname=sessions;host=db;keepalives_idle=30',
+      UserName   => 'lemonldap',
+      Password   => 'secret',
+      TableName  => 'sessions',
+      Commit     => 1,
   },
+
+Add C<KeepConnections =E<gt> 0> to these options to get back the shared
+C<connect_cached()> handle, or C<noreuse =E<gt> 1> to open and close a
+connection for each session.
 
 L<Web::Session::Patroni> has its own connection management and doesn't use
 this pool.

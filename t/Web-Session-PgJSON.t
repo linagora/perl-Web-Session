@@ -2,10 +2,14 @@ use strict;
 use lib 't/lib';
 use SQLBackendTests;
 
+# With Commit (set by run_tests), sessions use the connection pool of
+# Web::Session::Store::Postgres by default. Web-Session-PgJSON-noPool.t runs
+# the same tests with KeepConnections => 0
 run_tests(
     class  => 'Web::Session::PgJSON',
     driver => 'Pg',
     env    => 'PG',
+    pool   => 1,
     table  => 'asb_test_pgjson',
     create => [
 'CREATE TABLE __TABLE__ (id varchar(64) not null primary key, a_session jsonb)',

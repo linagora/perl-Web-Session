@@ -152,9 +152,11 @@ untie %session;
 
 # 8. Each store keeps the attributes of its own connections. The second
 # column marks the stores whose materialize() fails here (the session was
-# rolled back, or the query isn't SQLite's), which provides a failure
+# rolled back, or the query isn't SQLite's), which provides a failure. The
+# third one gives other arguments: the Postgres store uses its connection
+# pool by default (see 9.), KeepConnections => 0 gives back connect_cached()
 my %stores = (
-    Postgres  => [ 0, 1 ],
+    Postgres  => [ 0, 1, { KeepConnections => 0 } ],
     Patroni   => [ 0, 0 ],
     SQLite    => [ 0, 0 ],
     MySQL     => [ 1, 0 ],
@@ -162,14 +164,14 @@ my %stores = (
 );
 my $n = 0;
 foreach my $name ( sort keys %stores ) {
-    my ( $autoCommit, $failingMaterialize ) = @{ $stores{$name} };
+    my ( $autoCommit, $failingMaterialize, $extra ) = @{ $stores{$name} };
     my $store = "Web::Session::Store::$name";
     use_ok($store);
     my $session = sub {
         my ( $sid, %a ) = @_;
         return {
-            args       => { DataSource  => $dsn, Commit => 1, %a },
-            data       => { _session_id => $sid },
+            args => { DataSource  => $dsn, Commit => 1, %{ $extra || {} }, %a },
+            data => { _session_id => $sid },
             serialized => '{}',
         };
     };
@@ -207,6 +209,49 @@ foreach my $name ( sort keys %stores ) {
         undef $s;
         ok( $canWrite->(), "$name: no transaction left open after failure" );
     }
+}
+
+# 9. The Postgres store uses its connection pool by default when Commit is
+# set: a connection lent to one store at a time, AutoCommit on
+{
+    my $store   = 'Web::Session::Store::Postgres';
+    my $session = sub {
+        my ( $sid, %a ) = @_;
+        return {
+            args       => { DataSource  => $dsn, Commit => 1, %a },
+            data       => { _session_id => $sid },
+            serialized => '{}',
+        };
+    };
+    my ( $s1, $s2 ) = ( $store->new, $store->new );
+    my ( $sid1, $sid2 ) = ( 'pool-' . $n++, 'pool-' . $n++ );
+    $s1->insert( $session->($sid1) );
+    $s2->insert( $session->($sid2) );
+    my ( $d1, $d2 ) = ( $s1->{dbh}, $s2->{dbh} );
+    ok( defined $s1->{pool_key}, 'Postgres: pool used by default' );
+    ok( $d1->{AutoCommit},       'Postgres pool: AutoCommit on' );
+    isnt( refaddr($d1), refaddr($d2),
+        'Postgres pool: two stores at once, two connections' );
+    ok( $stored->($sid1), 'Postgres pool: written at once' );
+    undef $s2;
+    undef $s1;
+    ok( $d1->{Active}, 'Postgres pool: connection kept' );
+    ok( $canWrite->(), 'Postgres pool: no transaction left open' );
+    $s1 = $store->new;
+    $s1->connection( $session->($sid1) );
+    is( refaddr( $s1->{dbh} ), refaddr($d1), 'Postgres pool: handle reused' );
+    undef $s1;
+
+    # Without Commit, connect_cached() and a rollback, as with
+    # KeepConnections => 0
+    $s1 = $store->new;
+    my $sid3 = 'pool-' . $n++;
+    $s1->insert( $session->( $sid3, Commit => 0 ) );
+    ok( !defined $s1->{pool_key},  'Postgres without Commit: no pool' );
+    ok( !$s1->{dbh}->{AutoCommit}, 'Postgres without Commit: AutoCommit off' );
+    undef $s1;
+    ok( !$stored->($sid3), 'Postgres without Commit: rolled back' );
+    ok( $canWrite->(), 'Postgres without Commit: no transaction left open' );
 }
 
 done_testing();

@@ -47,11 +47,10 @@ indexes: `perldoc Web::Session::PgJSON`, for example.
 use Web::Session::PgJSON;
 
 my $args = {
-    DataSource      => 'dbi:Pg:dbname=sessions',
-    UserName        => $user,
-    Password        => $password,
-    Commit          => 1,
-    KeepConnections => 1,    # optional connection pool
+    DataSource => 'dbi:Pg:dbname=sessions',
+    UserName   => $user,
+    Password   => $password,
+    Commit     => 1,    # needed by the connection pool (default)
 };
 
 # Use it like Apache::Session
