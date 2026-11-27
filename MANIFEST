@@ -55,6 +55,7 @@ t/Web-Session-MariaDBJSON.t
 t/Web-Session-MySQLJSON-populate.t
 t/Web-Session-MySQLJSON.t
 t/Web-Session-Patroni.t
+t/Web-Session-PgJSON-classPool-fork.t
 t/Web-Session-PgJSON-classPool.t
 t/Web-Session-PgJSON-GinIndex.t
 t/Web-Session-PgJSON-noPool.t
