@@ -29,8 +29,34 @@ ok(
     'serialize produces characters with Latin-1 data'
 );
 
+# Canonical output: the same data gives the same string whatever the order in
+# which the keys were inserted (Perl randomizes the order of hash keys)
+{
+    my @keys = map { "k$_" } 1 .. 50;
+    my ( %a, %b );
+    $a{$_} = { map { ( "$_$_" => $_ ) } @keys } foreach @keys;
+    $b{$_} = { map { ( "$_$_" => $_ ) } reverse @keys }
+      foreach reverse @keys;
+    foreach my $f (qw(serialize serializeLatin1)) {
+        no strict 'refs';
+        my $sa = { data => \%a };
+        my $sb = { data => \%b };
+        &{"Web::Session::Serialize::JSON::$f"}($sa);
+        &{"Web::Session::Serialize::JSON::$f"}($sb);
+        is( $sa->{serialized}, $sb->{serialized},
+            "$f: same string whatever the key order" );
+        my $s = { data => { b => { d => 1, c => [ { z => 1, y => 2 } ] }, a => 2 } };
+        &{"Web::Session::Serialize::JSON::$f"}($s);
+        is(
+            $s->{serialized},
+            '{"a":2,"b":{"c":[{"y":2,"z":1}],"d":1}}',
+            "$f: keys are sorted at every level"
+        );
+    }
+}
+
 # Characters
-is_deeply( unser($chars), { cn => $wide, sn => $latin }, 'Characters' );
+is_deeply( unser($chars),{ cn => $wide, sn => $latin }, 'Characters' );
 is_deeply( unser('{"cn":"dwho"}'), { cn => 'dwho' },     'ASCII' );
 my $up = qq'{"cn":"$latin"}';
 utf8::upgrade($up);

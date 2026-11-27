@@ -16,6 +16,8 @@ Revision history for Perl extension Web::Session (formerly Apache::Session::Brow
       fork safe
     - searchLt() and searchGt() for SQL, Redis and LDAP backends
     - PgJSON: optional GIN index (GinIndex)
+    - SQL backends don't rewrite a session stored back unchanged
+      (RewriteUnchanged to always write it); the JSON serializer sorts keys
     - Quote table and column names; fix SQL injections through
       deleteIfLowerThan() values and JSON field names
     - deleteIfLowerThan(): fix "and" and "not" rules, invalid rules

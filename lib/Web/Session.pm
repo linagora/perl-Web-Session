@@ -114,6 +114,65 @@ PostgreSQL backends (PgJSON and its Postgres alias) also provide a pool of
 connections lent to one session at a time, with timeouts and error handling:
 see the C<KeepConnections> option in L<Web::Session::PgJSON>.
 
+=head1 UNCHANGED SESSIONS ARE NOT REWRITTEN
+
+L<Apache::Session> writes a session at untie as soon as a key was stored,
+even with the value it already had: Lemonldap::NG does that, for example when
+it reads a persistent session. With PostgreSQL, every such UPDATE writes a new
+row version (and often a new entry in every index) that vacuum must then
+clean up; other databases lock and log the row.
+
+SQL backends (PgJSON, Patroni, MySQLJSON, MariaDBJSON, SQLite and Cassandra,
+and their aliases) now skip the UPDATE when the session data is the same as
+the one read (or last updated) during the same tie:
+
+=over
+
+=item *
+
+L<Web::Session::Serialize::JSON> produces canonical JSON (keys sorted), so the
+same data always gives the same text. Sessions written by previous versions
+have their keys in random order, and C<jsonb> (PostgreSQL) or C<json> (MySQL)
+columns return a normalized text: in these cases, the data read is serialized
+again and compared. So upgrading does not make every session be rewritten
+once, and a session read from a C<jsonb> column and stored back unchanged is
+not rewritten either. Rows that are not JSON (Storable, written by very old
+versions) are still rewritten as JSON.
+
+=item *
+
+A real change is written as before, and a session saved several times during
+the same tie is compared with the last data updated. Creating a session
+(INSERT) is not affected.
+
+=item *
+
+A session that was modified by another process between C<tie> and C<untie>
+keeps that modification when this process stores the same values back, where
+it used to be overwritten by the data read before.
+
+=item *
+
+Index columns (SQLite, Cassandra) are computed from the session data, so they
+are unchanged too, except when a column was added to C<Index> after the row
+was written: to fill it, rewrite the sessions with the C<RewriteUnchanged>
+argument (see L</"Generic method: re-save every session from Perl">).
+
+=item *
+
+The database doesn't see the skipped UPDATE either: C<UPDATE> triggers don't
+fire, and audit tables or C<updated_at> columns maintained by the database
+are not updated when a session is stored back unchanged.
+
+=item *
+
+Set C<RewriteUnchanged> to a true value to always write the session at untie,
+as previous versions did.
+
+=back
+
+Redis, File and LDAP backends still write every modified session.
+
 =head1 AVAILABLE MODULES
 
 =head2 SQL databases
@@ -226,12 +285,14 @@ session is written. Use the generic method for these backends.
 
 This works with every backend (including the ones above and non-JSON rows): read
 each session and write it again, so that the store rewrites its index columns.
-Set C<$class> and C<$args> as you do in your application:
+Set C<$class> and C<$args> as you do in your application. C<RewriteUnchanged>
+is needed: the data is unchanged, so SQL backends would otherwise skip the
+write (see L</"UNCHANGED SESSIONS ARE NOT REWRITTEN">):
 
   my $class = 'Web::Session::SQLite';   # your backend
   my $ids   = $class->get_key_from_all_sessions( $args, sub { 1 } );
   foreach my $id ( keys %$ids ) {
-      tie my %s, $class, $id, $args;
+      tie my %s, $class, $id, { %$args, RewriteUnchanged => 1 };
       $s{_session_kind} = $s{_session_kind};   # marks the session as modified
       untie %s;
   }
@@ -262,7 +323,9 @@ Short-lived sessions expire and sessions rewritten regularly get their column
 filled over time, but a session that is never rewritten keeps a C<NULL> column
 forever. With Lemonldap::NG, persistent sessions never expire and are rewritten
 only when the user logs in: they are exactly the ones its purge rule could
-delete. Backfill before relying on the column.
+delete. And a session whose data doesn't change is not rewritten at all (see
+L</"UNCHANGED SESSIONS ARE NOT REWRITTEN">). Backfill before relying on the
+column.
 
 =head1 TABLE AND COLUMN NAMES
 
