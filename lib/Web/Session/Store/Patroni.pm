@@ -108,7 +108,8 @@ sub connection {
 # connection error) makes _try() give the connection back (flagged by
 # HandleError, it is closed) and retry with a new primary found by
 # checkMaster(). When the DSN changes, the idle connections to the former one
-# are closed at once instead of waiting for IdleTimeout.
+# are closed at once instead of waiting for IdleTimeout, and those lent at
+# this time are closed when given back (see _dropIdle()).
 sub _pooledPrimary {
     my ( $self, $args, $commit ) = @_;
     foreach ( 0 .. 1 ) {

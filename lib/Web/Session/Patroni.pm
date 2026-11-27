@@ -171,7 +171,9 @@ timeout (an isolated node), and every write would fail. The failover is
 detected as without the pool: a statement that fails closes its connection
 (the pool never lends again a connection that met an error), the Patroni API
 gives the new leader and the statement is retried on a connection to it. The
-idle connections to the former primary are then closed at once.
+idle connections of the process to the former primary are then closed at
+once, and those lent to other sessions at that moment are closed when they
+are given back.
 
 The pool is not used with C<Commit =E<gt> 0> (this backend commits when
 C<Commit> isn't set), with C<KeepConnections =E<gt> 0>, with C<noreuse> or
@@ -180,9 +182,7 @@ process (C<AutoCommit> off, a transaction committed at untie, see
 L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">), or with C<noreuse =E<gt> 1>
 a connection opened and closed for each session.
 
-Class methods (searchOn(), deleteIfLowerThan()...) don't use the pool: they
-use a connection to C<DataSource> as given, as in L<Web::Session::PgJSON>
-without the pool.
+Class methods don't use the pool, see L</Class methods>.
 
 =head2 Class methods
 

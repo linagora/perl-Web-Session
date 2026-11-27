@@ -740,7 +740,7 @@ connection for each session.
 L<Web::Session::Patroni> sessions use this pool too, keyed by the DSN of the
 primary node found through the Patroni API, see "Connection pool" in
 L<Web::Session::Patroni>. Its class methods don't: they keep the
-C<connect_cached()> handle.
+C<connect_cached()> handle, see "Class methods" in L<Web::Session::Patroni>.
 
 =head1 POSTGRESQL TUNING
 

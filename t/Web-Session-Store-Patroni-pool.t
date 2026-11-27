@@ -154,6 +154,7 @@ sub session {
 
 sub reset_all {
     %Web::Session::Store::Postgres::IDLE         = ();
+    %Web::Session::Store::Postgres::DROPS        = ();
     %Web::Session::Store::Patroni::patroniCache = ();
     @FakeDbh::connects                           = ();
     @FakeDbh::sql                                = ();
@@ -225,6 +226,11 @@ is( $apiCalls, 1, 'Leader cache: no more API calls' );
 }
 is( idle($node1), 2, 'Both given back' );
 
+# A session keeps a connection to 10.0.0.1 during the failover below
+my $lent = $class->new;
+$lent->update( session() );
+my $lentDbh = $lent->{dbh};
+
 # Failover: 10.0.0.1 is demoted (it still answers ping, writes fail), the
 # Patroni API now gives 10.0.0.2
 $leader = '10.0.0.2';
@@ -243,6 +249,25 @@ is( idle($node1), 0, 'Failover: no idle connection to the former primary' );
 ok( !( grep { $_->{Active} } @old ),
     'Failover: connections to the former primary closed' );
 is( idle($node2), 1, 'New primary connection given back to the pool' );
+
+# Lent to another session at the time of the failover: closed when given
+# back, not kept with the idle connections of the former primary
+undef $lent;
+is( idle($node1), 0, 'Failover: lent connection not given back' );
+ok( !$lentDbh->{Active}, 'Failover: lent connection closed when given back' );
+
+# Dropping idle connections doesn't disconnect a closed handle again
+{
+    my $closed =
+      FakeDbh->new( $node1, private_ws_pid => $$, private_ws_born => time );
+    $closed->{Active} = 0;
+    push @{ $Web::Session::Store::Postgres::IDLE{"$node1\0u"} },
+      [ $closed, time ];
+    my $disconnects = $FakeDbh::disconnects;
+    Web::Session::Store::Postgres::_dropIdle("$node1\0u");
+    is( $FakeDbh::disconnects, $disconnects,
+        'Dropped: closed handle not disconnected again' );
+}
 
 # The next sessions use the new primary (leader cache under the original
 # DataSource) and its pooled connection

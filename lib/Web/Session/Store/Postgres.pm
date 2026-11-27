@@ -34,6 +34,9 @@ our $VERSION = '1.0.0';
 # a connection of this pool for the duration of each call (see _lend()), so
 # that a process using both sessions and class methods doesn't keep one more
 # connection for the latter.
+# Times the idle connections of a data source were dropped by _dropIdle():
+# a connection lent before the last drop is closed when given back
+our %DROPS;    # "datasource\0user" => count
 our %IDLE;   # "datasource\0user" => [ [ $dbh, $since ], ... ]
 
 # Defaults of the MaxIdle, IdleTimeout and MaxLifetime arguments
@@ -188,6 +191,7 @@ sub _borrow {
     return {
         dbh          => $dbh,
         pool_key     => $key,
+        pool_drops   => $DROPS{$key} // 0,
         pool_maxidle => _intArg( $args, 'MaxIdle', $MAX_IDLE ),
         pool_idle    => $idleTimeout,
         pool_maxlife => $maxLifetime,
@@ -206,16 +210,19 @@ sub _pooledConnection {
 }
 
 # Closes the idle connections of this process to the data source of key $key
-# (see _poolKey()). The Patroni store drops those to a former primary
+# (see _poolKey()); those lent at this time are closed when given back. The
+# Patroni store drops those to a former primary
 sub _dropIdle {
     my ($key) = @_;
+    $DROPS{$key}++;
     my $idle = delete $IDLE{$key} or return;
     local $@;
     foreach (@$idle) {
         my $h = $_->[0];
 
         # Inherited from a parent process: left to it (AutoInactiveDestroy)
-        eval { $h->disconnect } if ( $h->{private_ws_pid} == $$ );
+        eval { $h->disconnect }
+          if ( $h->{Active} and $h->{private_ws_pid} == $$ );
     }
 }
 
@@ -236,7 +243,8 @@ sub _giveBack {
     return if ( $dbh->{private_ws_pid} != $$ );
 
     # Each statement committed itself (AutoCommit): the connection goes back
-    # to the idle ones, unless it met an error or is too old. Expired idle
+    # to the idle ones, unless it met an error, is too old or was lent before
+    # its data source was dropped (a former Patroni primary). Expired idle
     # connections (at the bottom of the stack, never reached when the pool
     # stays busy) are closed now
     my $now  = time;
@@ -257,6 +265,7 @@ sub _giveBack {
     } @$idle;
     if (    !$dbh->{private_ws_error}
         and $dbh->{Active}
+        and ( $DROPS{$key} // 0 ) == ( $loan->{pool_drops} // 0 )
         and $now - $dbh->{private_ws_born} <= $loan->{pool_maxlife}
         and @$idle < $loan->{pool_maxidle} )
     {
