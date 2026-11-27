@@ -195,13 +195,19 @@ sub _unserializer {
     return $p->()->{unserialize};
 }
 
+# Batch size (LIMIT) used by _forEachSession() and by the batched purge of
+# PgJSON: $BatchSize if it is an integer in 1..1_000_000, else 1000
+sub _batchSize {
+    my ($limit) = ( $BatchSize // '' ) =~ /^\s*([1-9][0-9]*)\s*\z/;
+    return ( !$limit or $limit > 1_000_000 ) ? 1000 : $limit;
+}
+
 # Call $sub->( $id, $serialized ) for each session. If the driver supports
 # LIMIT, sessions are read by batches to avoid loading the whole table in
 # memory. No server-side cursor here: $sub may reuse the database handle.
 sub _forEachSession {
     my ( $class, $dbh, $table_name, $sub ) = @_;
-    my ($limit) = ( $BatchSize // '' ) =~ /^\s*([1-9][0-9]*)\s*\z/;
-    $limit = 1000 if ( !$limit or $limit > 1_000_000 );
+    my $limit = $class->_batchSize;
     my $sql   = "SELECT id,a_session FROM $table_name";
     unless ( $dbh->{Driver}->{Name} =~ /^(?:Pg|mysql|MariaDB|SQLite)\z/ ) {
         my $sth = $dbh->prepare_cached($sql);
