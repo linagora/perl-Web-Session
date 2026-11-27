@@ -32,9 +32,6 @@ run_tests(
     weird => [ "weird'field", 'a"b\\c', 'a?b', 'x\\' ],
     exact => 1,
     utf8  => 1,
-    todo  => {
-        utf8Read => 'non-ASCII values are read as bytes (fixed by #54)',
-    },
     explain => sub {
         my ( $class, $dbh ) = @_;
         my ( $wt, $sk ) =
