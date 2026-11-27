@@ -13,11 +13,20 @@ jobs:
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     services:
       redis:
-        image: redis:7
+        image: redis:7.4
         ports:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:9
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -116,3 +125,13 @@ jobs:
           MARIADB_DSN='dbi:MariaDB:database=sessions;host=127.0.0.1;port=3308' prove -b t/Web-Session-MariaDBJSON.t
           MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3308' prove -b t/Web-Session-MariaDBJSON.t
           MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3307' prove -b t/Web-Session-MariaDBJSON.t
+      - name: Run Redis tests with Valkey and Redis::Fast
+        env:
+          REDIS_URL: localhost:6380
+        run: |
+          prove -b t/Web-Session-Redis*.t t/Web-Session-Store-Redis.t t/Web-Session-utf8.t
+          cpanm --notest -l "$RUNNER_TEMP/redis-fast" Redis::Fast
+          export PERL5LIB="$RUNNER_TEMP/redis-fast/lib/perl5"
+          perl -Iblib/lib -MWeb::Session::Store::Redis -e 'exit( $Web::Session::Store::Redis::redis ne "Redis::Fast" )'
+          prove -b t/Web-Session-Redis*.t t/Web-Session-Store-Redis.t t/Web-Session-utf8.t
+          REDIS_URL=localhost:6379 prove -b t/Web-Session-Redis*.t t/Web-Session-Store-Redis.t t/Web-Session-utf8.t

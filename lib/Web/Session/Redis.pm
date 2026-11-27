@@ -31,6 +31,20 @@ sub _keyName {
     return Web::Session::Store::Redis::keyName(@_);
 }
 
+# Index sets, plus index hashes with utimeOffset: [ name, is a hash ]. Only
+# ASCII is added to the name of a set
+sub _indexNames {
+    my ( $args, $name ) = @_;
+    return (
+        [ $name, 0 ],
+        (
+            Web::Session::Store::Redis::hashIndex($args)
+            ? [ $Web::Session::Store::Redis::HASH_INDEX_PREFIX . $name, 1 ]
+            : ()
+        )
+    );
+}
+
 # SCAN patterns for searchOnExpr(). The name of a set is Latin-1 unless it
 # holds characters above U+00FF, so a wildcard may stand for such characters
 # while the literal part is not ASCII: the UTF-8 form is then scanned too
@@ -70,13 +84,22 @@ sub _mget {
     return @res;
 }
 
-# Members of index sets @$sets, read in one pipeline: { set => [ keys ] }.
-# A key that isn't a set is ignored; other Redis errors are raised
+# Members of index sets @$sets (index hashes if $hash), read in one pipeline:
+# { set => [ keys ] }. A key of another type is ignored; other Redis errors
+# are raised
 sub _smembers {
-    my ( $redisObj, $sets ) = @_;
+    my ( $redisObj, $sets, $hash ) = @_;
+    return _indexMembers( $redisObj, [ map { [ $_, $hash ] } @$sets ] );
+}
+
+# Same as _smembers() for index sets and hashes @$names: [ name, is a hash ]
+sub _indexMembers {
+    my ( $redisObj, $names ) = @_;
     my ( %res, $fatal );
-    foreach my $set (@$sets) {
-        $redisObj->smembers(
+    foreach my $name (@$names) {
+        my ( $set, $hash ) = @$name;
+        my $cmd = $hash ? 'hkeys' : 'smembers';
+        $redisObj->$cmd(
             $set,
             sub {
                 my ( $reply, $err ) = @_;
@@ -98,15 +121,25 @@ sub _smembers {
 # step: a concurrent writer may be recreating it
 our $SREM_ORPHAN = q{if redis.call('exists',KEYS[2])==0 then }
   . q{return redis.call('srem',KEYS[1],KEYS[2]) end return 0};
+our $HDEL_ORPHAN = q{if redis.call('exists',KEYS[2])==0 then }
+  . q{return redis.call('hdel',KEYS[1],KEYS[2]) end return 0};
 
 our $lua_warned;
 
-# Remove orphan session $k from index set $set. Without Lua (EVAL forbidden by
-# ACL, proxy...), WATCH the session so that a concurrent writer aborts the
-# removal. $k must have been checked with isLlngKey()
+# Remove orphan session $k from index set $set (index hash if $hash). Without
+# Lua (EVAL forbidden by ACL, proxy...), WATCH the session so that a
+# concurrent writer aborts the removal. $k must have been checked with
+# isLlngKey()
 sub _removeOrphan {
-    my ( $class, $redisObj, $set, $k ) = @_;
-    return if ( eval { $redisObj->eval( $SREM_ORPHAN, 2, $set, $k ); 1 } );
+    my ( $class, $redisObj, $set, $k, $hash ) = @_;
+    return
+      if (
+        eval {
+            $redisObj->eval( ( $hash ? $HDEL_ORPHAN : $SREM_ORPHAN ),
+                2, $set, $k );
+            1;
+        }
+      );
     unless ($lua_warned) {
         $lua_warned = 1;
         print STDERR "Redis EVAL failed, orphan index members are removed "
@@ -120,7 +153,7 @@ sub _removeOrphan {
         }
         else {
             $redisObj->multi;
-            $redisObj->srem( $set, $k );
+            $hash ? $redisObj->hdel( $set, $k ) : $redisObj->srem( $set, $k );
             $redisObj->exec;
         }
     };
@@ -138,23 +171,27 @@ sub searchOn {
     my %res = ();
     if ( $class->isIndexed( $args, $selectField ) ) {
 
-        my $redisObj  = $class->_getRedis($args);
-        my $index_key = _keyName("${selectField}_$value");
-        my @keys      = eval { $redisObj->smembers($index_key) };
-        if ($@) {
-            die $@ unless ( $@ =~ /WRONGTYPE/ );
-            @keys = ();
-        }
+        my $redisObj = $class->_getRedis($args);
+        my ( @keys, %index, %seen );
+        my @names   = _indexNames( $args, _keyName("${selectField}_$value") );
+        my $members = _indexMembers( $redisObj, \@names );
+        foreach my $name (@names) {
 
-        # Members of another application are neither read nor removed
-        @keys = grep { $_ and $class->isLlngKey( $args, $_ ) } @keys;
+            # Members of another application are neither read nor removed
+            foreach ( @{ $members->{ $name->[0] } || [] } ) {
+                next unless ( $_ and $class->isLlngKey( $args, $_ ) );
+                push @{ $index{$_} }, $name;
+                push @keys, $_ unless ( $seen{$_}++ );
+            }
+        }
         my %values;
         @values{@keys} = _mget( $redisObj, @keys );
         foreach my $k (@keys) {
             my $tmp = $values{$k};
             unless ($tmp) {
                 # Lazy cleanup: remove orphan from index
-                $class->_removeOrphan( $redisObj, $index_key, $k );
+                $class->_removeOrphan( $redisObj, $_->[0], $k, $_->[1] )
+                  foreach ( @{ $index{$k} } );
                 next;
             }
             eval {
@@ -200,6 +237,45 @@ sub searchOn {
     return \%res;
 }
 
+# Regexp of the names matched by the SCAN pattern $glob: '*' is its only
+# wildcard, a backslash escapes the next character
+sub _globRe {
+    my ($glob) = @_;
+    my $re = join '',
+      map { $_ eq '*' ? '.*' : quotemeta( substr( $_, -1 ) ) }
+      $glob =~ /(\\.|.)/gs;
+    return qr/^$re\z/s;
+}
+
+# Call $cb->( \@sets, $hash ) for each SCAN page of the index sets matching
+# $pattern and, with utimeOffset, of the index hashes: "*$pattern" matches
+# both, so that the keyspace is walked once. @opts are given to SCAN
+sub _scanIndexes {
+    my ( $redisObj, $args, $pattern, $cb, @opts ) = @_;
+    my $hash = Web::Session::Store::Redis::hashIndex($args);
+    my ( $setRe, $hashRe );
+    if ($hash) {
+        $setRe  = _globRe($pattern);
+        $hashRe = _globRe(
+            _globEscape($Web::Session::Store::Redis::HASH_INDEX_PREFIX)
+              . $pattern );
+    }
+    my $cursor = 0;
+    do {
+        my ( $new_cursor, $keys ) = $redisObj->scan( $cursor,
+            MATCH => ( $hash ? "*$pattern" : $pattern ),
+            @opts );
+        if ($hash) {
+            $cb->( [ grep { $_ =~ $setRe } @$keys ], 0 );
+            $cb->( [ grep { $_ =~ $hashRe } @$keys ], 1 );
+        }
+        else {
+            $cb->( $keys, 0 );
+        }
+        $cursor = $new_cursor;
+    } while ( $cursor != 0 );
+}
+
 # searchOnExpr() patterns: '*' is a wildcard
 sub _exprRe {
     my ($value) = @_;
@@ -230,52 +306,54 @@ sub searchOnExpr {
     if ( $class->isIndexed( $args, $selectField ) ) {
         my $redisObj = $class->_getRedis($args);
         foreach my $pattern ( _exprPatterns( $selectField, $value ) ) {
-            my $cursor = 0;
-            do {
-                my ( $new_cursor, $sets ) =
-                  $redisObj->scan( $cursor,
-                    MATCH => $pattern,
-                    COUNT => $SCAN_COUNT );
+            _scanIndexes(
+                $redisObj, $args, $pattern,
+                sub {
+                    my ( $sets, $hash ) = @_;
 
-                # The sets of a SCAN page are read together: a few round trips
-                # instead of two per set. Members of another application are
-                # neither read nor removed
-                my $members = _smembers( $redisObj, $sets );
-                foreach my $set ( keys %$members ) {
-                    $members->{$set} =
-                      [ grep { $_ and $class->isLlngKey( $args, $_ ) }
-                          @{ $members->{$set} } ];
-                }
-                my %seen;
-                my @keys = grep { !$seen{$_}++ } map { @$_ } values %$members;
-                my %values;
-                @values{@keys} = _mget( $redisObj, @keys );
-                foreach my $set ( keys %$members ) {
-                    foreach my $k ( @{ $members->{$set} } ) {
-                        my $v = $values{$k};
-                        unless ($v) {
-                            # Lazy cleanup: remove orphan from index
-                            $class->_removeOrphan( $redisObj, $set, $k );
-                            next;
-                        }
-                        my $tmp = eval { unserialize($v) };
-                        if ( $@ or ref($tmp) ne 'HASH' ) {
-                            print STDERR "Error in session $k: "
-                              . ( $@ || "not a session\n" );
-                            next;
-                        }
-
-                        # The pattern may match sets of another field
-                        unless ( defined $tmp->{$selectField}
-                            and $tmp->{$selectField} =~ $re )
-                        {
-                            next;
-                        }
-                        $res{$k} = $class->extractFields( $tmp, @fields );
+                    # The sets of a SCAN page are read together: a few round
+                    # trips instead of two per set. Members of another
+                    # application are neither read nor removed
+                    my $members = _smembers( $redisObj, $sets, $hash );
+                    foreach my $set ( keys %$members ) {
+                        $members->{$set} =
+                          [ grep { $_ and $class->isLlngKey( $args, $_ ) }
+                              @{ $members->{$set} } ];
                     }
-                }
-                $cursor = $new_cursor;
-            } while ( $cursor != 0 );
+                    my %seen;
+                    my @keys =
+                      grep { !$seen{$_}++ } map { @$_ } values %$members;
+                    my %values;
+                    @values{@keys} = _mget( $redisObj, @keys );
+                    foreach my $set ( keys %$members ) {
+                        foreach my $k ( @{ $members->{$set} } ) {
+                            my $v = $values{$k};
+                            unless ($v) {
+                                # Lazy cleanup: remove orphan from index
+                                $class->_removeOrphan( $redisObj, $set, $k,
+                                    $hash );
+                                next;
+                            }
+                            my $tmp = eval { unserialize($v) };
+                            if ( $@ or ref($tmp) ne 'HASH' ) {
+                                print STDERR "Error in session $k: "
+                                  . ( $@ || "not a session\n" );
+                                next;
+                            }
+
+                            # The pattern may match sets of another field
+                            unless ( defined $tmp->{$selectField}
+                                and $tmp->{$selectField} =~ $re )
+                            {
+                                next;
+                            }
+                            $res{$k} =
+                              $class->extractFields( $tmp, @fields );
+                        }
+                    }
+                },
+                COUNT => $SCAN_COUNT
+            );
         }
     }
     else {
@@ -347,54 +425,61 @@ sub _searchCompare {
     my $redisObj = $class->_getRedis($args);
     my $prefix   = "${selectField}_";
     ( my $pattern = $prefix ) =~ s/([*?\[\]\\])/\\$1/g;
-    my $cursor = 0;
-    do {
-        my ( $new_cursor, $sets ) =
-          $redisObj->scan( $cursor, MATCH => "$pattern*" );
+    _scanIndexes(
+        $redisObj, $args,
+        "$pattern*",
+        sub {
+            my ( $sets, $hash ) = @_;
+            my $cmd  = $hash ? 'hkeys' : 'smembers';
+            my $skip = length($prefix) + (
+                $hash
+                ? length($Web::Session::Store::Redis::HASH_INDEX_PREFIX)
+                : 0
+            );
 
-        # Sets of other fields ("${selectField}_x_1") aren't numbers
-        foreach my $set (
-            grep { $test->( substr( $_, length($prefix) ) ) } @$sets )
-        {
-            my @keys = eval { $redisObj->smembers($set) };
-            if ($@) {
-                print STDERR "Error when reading index $set: $@\n"
-                  unless ( $@ =~ /WRONGTYPE/ );
-                next;
-            }
-            foreach my $k (@keys) {
-
-                # Members of another application are neither read nor removed
-                next
-                  unless ( $k
-                    and !exists $res{$k}
-                    and $class->isLlngKey( $args, $k ) );
-                my $v = eval { $redisObj->get($k) };
+            # Sets of other fields ("${selectField}_x_1") aren't numbers
+            foreach my $set ( grep { $test->( substr( $_, $skip ) ) } @$sets )
+            {
+                my @keys = eval { $redisObj->$cmd($set) };
                 if ($@) {
-                    print STDERR "Error when reading $k: $@\n"
+                    print STDERR "Error when reading index $set: $@\n"
                       unless ( $@ =~ /WRONGTYPE/ );
                     next;
                 }
-                unless ($v) {
+                foreach my $k (@keys) {
 
-                    # Lazy cleanup: remove orphan from index
-                    $class->_removeOrphan( $redisObj, $set, $k );
-                    next;
-                }
-                my $tmp = eval { unserialize($v) };
-                if ( $@ or ref($tmp) ne 'HASH' ) {
-                    print STDERR "Error in session $k: "
-                      . ( $@ || "not a session\n" );
-                    next;
-                }
+                    # Members of another application are neither read nor
+                    # removed
+                    next
+                      unless ( $k
+                        and !exists $res{$k}
+                        and $class->isLlngKey( $args, $k ) );
+                    my $v = eval { $redisObj->get($k) };
+                    if ($@) {
+                        print STDERR "Error when reading $k: $@\n"
+                          unless ( $@ =~ /WRONGTYPE/ );
+                        next;
+                    }
+                    unless ($v) {
 
-                # The index may be stale: check the session itself
-                $res{$k} = $class->extractFields( $tmp, @fields )
-                  if ( $test->( $tmp->{$selectField} ) );
+                        # Lazy cleanup: remove orphan from index
+                        $class->_removeOrphan( $redisObj, $set, $k, $hash );
+                        next;
+                    }
+                    my $tmp = eval { unserialize($v) };
+                    if ( $@ or ref($tmp) ne 'HASH' ) {
+                        print STDERR "Error in session $k: "
+                          . ( $@ || "not a session\n" );
+                        next;
+                    }
+
+                    # The index may be stale: check the session itself
+                    $res{$k} = $class->extractFields( $tmp, @fields )
+                      if ( $test->( $tmp->{$selectField} ) );
+                }
             }
         }
-        $cursor = $new_cursor;
-    } while ( $cursor != 0 );
+    );
     return \%res;
 }
 
@@ -464,10 +549,17 @@ sub deleteIfLowerThan {
                 foreach my $i (@$index) {
                     my $t = $v->{$i};
                     next unless ( defined($t) and length($t) > 0 );
-                    eval { $redisObj->srem( _keyName("${i}_$t"), $k ) };
-                    if ($@) {
-                        warn "Failed to remove '$k' from index '${i}_$t': $@";
-                        $index_ok = 0;
+                    foreach ( _indexNames( $args, _keyName("${i}_$t") ) ) {
+                        my ( $name, $hash ) = @$_;
+                        eval {
+                            $hash
+                              ? $redisObj->hdel( $name, $k )
+                              : $redisObj->srem( $name, $k );
+                        };
+                        if ($@) {
+                            warn "Failed to remove '$k' from index '$name': $@";
+                            $index_ok = 0;
+                        }
                     }
                 }
                 if ($index_ok) {
@@ -592,6 +684,10 @@ Apache::Session::Redis
 
        # Optional: set a Redis TTL on session keys (in seconds)
        # TTL => 86400,
+
+       # Optional: expire sessions at _utime + utimeOffset, see
+       # Web::Session::Store::Redis
+       # utimeOffset => 79200,
   };
   
   # Use it like Apache::Session
@@ -665,7 +761,8 @@ Lemonldap::NG, used with backends that don't provide these methods, compares
 a missing field as 0.
 
 If the field isn't listed in C<Index>, all sessions are read and decoded. If
-it is, Redis still walks the whole keyspace (C<SCAN ... MATCH field_*>), but
+it is, Redis still walks the whole keyspace (C<SCAN ... MATCH field_*>, or
+C<*field_*> to find the index hashes too with C<utimeOffset>), but
 server-side: only the index sets of this field (C<field_value> keys) are
 returned, and only the sessions of sets holding a matching value are read.
 Orphan entries of these sets are removed; keys that don't match C<keysRe>
@@ -686,7 +783,8 @@ them:
       untie %s;
   }
 
-This also refreshes their C<TTL>, if any.
+This also refreshes their C<TTL> or, with C<utimeOffset>, recomputes their
+expiration from C<_utime>.
 
 =head1 CHARACTERS ABOVE U+00FF
 
@@ -702,7 +800,10 @@ Index sets are updated after the session is written, without a transaction.
 If the same session is updated concurrently by two processes, a stale member
 can remain in the index set of a previous value. C<searchOn> only removes
 members whose session no longer exists and doesn't check the indexed value
-again, so such a session may be returned for a value it no longer has.
+again, so such a session may be returned for a value it no longer has. With
+C<utimeOffset>, the index entries are written in the same transaction as the
+session, but the previous value is read before: the same can happen. The
+stale entry then expires with the session, unless the session doesn't expire.
 
 =head1 SEE ALSO
 
