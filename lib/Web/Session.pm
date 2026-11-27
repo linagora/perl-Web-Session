@@ -375,8 +375,11 @@ exceptions. A value that isn't a number returns C<{}> and prints an error on
 STDERR. With PostgreSQL, MySQL, MariaDB and SQLite, if the SQL query fails
 (PostgreSQL can't cast a value that isn't an integer, for example), the error
 is printed on STDERR, then all sessions are read and compared in Perl, as the
-generic search of Lemonldap::NG does (a value that isn't a number is 0): the
-result is the same, only slower. C<{}> is returned only if reading the
+generic search of Lemonldap::NG does (a value that isn't a number is 0): for
+integer values, the result is the same, only slower. Other values can compare
+differently, SQL keeping only an integer prefix (C<12.7> is 12 in SQL, 12.7
+in Perl), see "searchLt() and searchGt()" in L<Web::Session::SQLite>. C<{}>
+is returned only if reading the
 sessions fails too. With LDAP, an LDAP error returns C<{}> and prints a
 warning. Redis and Cassandra compare in Perl: a session that can't be read is
 skipped, a failure of the server dies as get_key_from_all_sessions() does.
