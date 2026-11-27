@@ -28,7 +28,7 @@ my %stores = (
     MySQL       => {},
     SQLite      => {},
     MariaDBJSON => {},
-    Patroni     => {},
+    Patroni     => { KeepConnections => 0 },
     Cassandra   => {},
     Postgres    => { KeepConnections => 0 },
     Postgres2   => { Commit          => 0 },    # no pool without Commit

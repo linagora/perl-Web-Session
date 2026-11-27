@@ -353,6 +353,9 @@ quiet { $class->new->insert( session() ) };
     $store->materialize($s);
     is( idle($node1), 0, 'Transaction open: connection not idle' );
     ok( !$store->{dbh}->{AutoCommit}, 'Transaction open: AutoCommit off' );
+
+    # Changed: an unchanged session is not written back
+    $s->{serialized} = '{"uid":"changed"}';
     $store->update($s);
 }
 is_deeply( [ statements($node1) ], [qw(BEGIN SELECT UPDATE COMMIT)],
