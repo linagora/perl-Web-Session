@@ -140,6 +140,15 @@ Path to a directory containing CA certificates for verification.
 
 =back
 
+=head2 Unchanged sessions
+
+As the other SQL backends, Patroni doesn't rewrite a session stored back
+unchanged, see L<Web::Session/"UNCHANGED SESSIONS ARE NOT REWRITTEN">. But it
+reads the session with C<SELECT ... FOR UPDATE>, as
+L<Apache::Session::Store::Postgres> does: the row stays locked until the
+transaction ends at untie, whether the save is skipped or not. Skipping it
+saves the write, not the lock.
+
 =head2 Persistent connection
 
 The database connection is kept open between sessions. Set

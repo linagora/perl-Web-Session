@@ -160,6 +160,12 @@ argument (see L</"Generic method: re-save every session from Perl">).
 
 =item *
 
+The database doesn't see the skipped UPDATE either: C<UPDATE> triggers don't
+fire, and audit tables or C<updated_at> columns maintained by the database
+are not updated when a session is stored back unchanged.
+
+=item *
+
 Set C<RewriteUnchanged> to a true value to always write the session at untie,
 as previous versions did.
 

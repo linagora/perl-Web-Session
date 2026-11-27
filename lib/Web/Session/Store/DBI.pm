@@ -14,13 +14,14 @@ our $VERSION = '1.0.0';
 # Why AutoCommit differs between stores: each store opens its connection
 # with the attributes of the Apache::Session store it derives from.
 # Apache::Session::Store::Postgres uses AutoCommit off and commits in DESTROY
-# when Commit is set (upstream, it also locks the row with
-# "SELECT ... FOR UPDATE", but here materialize() comes first from
-# Apache::Session::Store::DBI, which doesn't lock); the Patroni and SQLite
-# stores copy this model. Apache::Session::Store::MySQL (MySQLJSON derives
-# from it) was written for MyISAM, which has no transaction: AutoCommit on.
-# No SQL backend of this distribution locks sessions (they all use
-# Apache::Session::Lock::Null): with AutoCommit off, the transaction only
+# when Commit is set (it also locks the row with "SELECT ... FOR UPDATE", but
+# in Web::Session::Store::Postgres materialize() comes first from
+# Apache::Session::Store::DBI, which doesn't lock; Web::Session::Store::Patroni
+# calls Apache::Session::Store::Postgres's one and keeps the lock); the
+# Patroni and SQLite stores copy this model. Apache::Session::Store::MySQL
+# (MySQLJSON derives from it) was written for MyISAM, which has no
+# transaction: AutoCommit on. All SQL backends of this distribution use
+# Apache::Session::Lock::Null: with AutoCommit off, the transaction only
 # spans the reads and the write of one tie.
 # Keeping each store's own attributes keeps its behaviour unchanged.
 #
@@ -170,10 +171,10 @@ sub update {
 # its WAL) that must be cleaned up later, plus a new entry in every index when
 # the stored value of a_session changes (the indexes are expressions on it, so
 # the update can't be HOT), for example when the keys of a json column come
-# in another order; other databases lock and log the row. So the store keeps the serialized data it read (or
-# last updated) and update() returns without writing when the new one is the
-# same. insert() is unchanged: it doesn't keep what it wrote, so the first
-# update() after it always writes.
+# in another order; other databases lock and log the row. So the store keeps
+# the serialized data it read (or last updated) and update() returns without
+# writing when the new one is the same. insert() is unchanged: it doesn't
+# keep what it wrote, so the first update() after it always writes.
 #
 # The functions below take the store as first argument, not as invocant:
 # Web::Session::Store::MariaDBJSON and Web::Session::Store::Patroni don't
@@ -220,8 +221,10 @@ sub _unchanged {
     # random order: the bytes never match. The data read is then serialized
     # again, the way the session read it, and compared. When it matches,
     # readers already get the data that would be written, so the write
-    # changes nothing they see. Only JSON objects: a row in another format
-    # (Storable, written by old versions) is still rewritten as JSON.
+    # changes nothing they see. Only JSON objects: the session data is a
+    # hash, so a row holding another JSON value can't hold the same data, and
+    # a row in another format (Storable, written by old versions) is still
+    # rewritten as JSON.
     # Costs one decode and one encode when the bytes differ (at each update
     # with jsonb or MySQL json columns), much less than a write.
     return 0 unless ( $old =~ /\A\s*\{/ );
