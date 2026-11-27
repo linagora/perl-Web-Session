@@ -8,20 +8,44 @@ permissions:
   contents: read
 
 jobs:
-  cpan:
+  check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Check that the tag matches the version
         run: perl .github/check-version.pl "$GITHUB_REF_NAME"
+
+      - name: Check that the tagged commit is on master
+        run: |
+          git fetch origin master
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::$GITHUB_REF_NAME is not on master: only tag commits that passed the CI of master"
+            exit 1
+          fi
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  dist:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libmodule-build-perl libapache-session-perl \
-            libjson-perl libcrypt-urandom-perl libdbi-perl libdbd-sqlite3-perl \
-            libcpan-uploader-perl
+            libjson-perl libcrypt-urandom-perl libdbi-perl libdbd-sqlite3-perl
 
       - name: Build and test the distribution
         run: |
@@ -30,18 +54,103 @@ jobs:
           ./Build test
           ./Build distcheck
           ./Build dist
-          test -f "Web-Session-${GITHUB_REF_NAME#v}.tar.gz"
+          test -f "Web-Session-$VERSION.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: Web-Session-${{ env.VERSION }}.tar.gz
+          if-no-files-found: error
+
+  deb:
+    needs: [ check, dist ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: debian:trixie
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      DEBFULLNAME: Web::Session release
+      DEBEMAIL: noreply@github.com
+      DEB_BUILD_OPTIONS: nocheck
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+
+      - name: Install the packaging tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            dh-make-perl apt-file build-essential
+          apt-file update
+
+      - name: Build the Debian package
+        run: |
+          tar xzf "Web-Session-$VERSION.tar.gz"
+          cd "Web-Session-$VERSION"
+          dh-make-perl --packagename libweb-session-perl --vcs none
+          perl -0pi -e 's/^(Description:)/Recommends: libdbi-perl,\n            libredis-fast-perl | libredis-perl,\n            libnet-ldap-perl,\n            libio-socket-timeout-perl,\n            libauthen-sasl-perl\nSuggests: libdbd-pg-perl,\n          libdbd-mariadb-perl | libdbd-mysql-perl,\n          libdbd-sqlite3-perl,\n          libdbd-cassandra-perl,\n          libwww-perl\n$1/m' debian/control
+          dpkg-buildpackage -us -uc -b -Pnocheck
+          cd ..
+          test -f "libweb-session-perl_$VERSION-1_all.deb"
+          dpkg-deb --info "libweb-session-perl_$VERSION-1_all.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: libweb-session-perl_${{ env.VERSION }}-1_all.deb
+          if-no-files-found: error
+
+  release:
+    needs: [ check, dist, deb ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create the GitHub release
+        run: |
+          perl -ne 'if (/^(\d+\.\d+(?:\.\d+)?)\b/) { $in = $1 eq $ENV{VERSION}; next } print if $in' \
+            Changes > notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "Web::Session $VERSION" --notes-file notes.md \
+            "Web-Session-$VERSION.tar.gz" "libweb-session-perl_$VERSION-1_all.deb"
+
+  cpan:
+    needs: [ check, release ]
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: cpan
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+
+      - name: Install cpan-upload
+        run: sudo apt-get update && sudo apt-get install -y libcpan-uploader-perl
 
       - name: Upload to CPAN
-        if: github.repository == 'linagora/perl-Web-Session'
         env:
           PAUSE_USERNAME: ${{ secrets.PAUSE_USERNAME }}
           PAUSE_PASSWORD: ${{ secrets.PAUSE_PASSWORD }}
         run: |
           if [ -z "$PAUSE_USERNAME" ] || [ -z "$PAUSE_PASSWORD" ]; then
-            echo "::error::PAUSE_USERNAME and PAUSE_PASSWORD secrets are required"
+            echo "::error::PAUSE_USERNAME and PAUSE_PASSWORD secrets of the cpan environment are required"
             exit 1
           fi
+          trap 'rm -f ~/.pause' EXIT
           umask 077
           printf 'user %s\npassword %s\n' "$PAUSE_USERNAME" "$PAUSE_PASSWORD" > ~/.pause
-          cpan-upload "Web-Session-${GITHUB_REF_NAME#v}.tar.gz"
+          cpan-upload "Web-Session-$VERSION.tar.gz"

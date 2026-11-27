@@ -71,6 +71,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Check that the versions are consistent
+        run: perl .github/check-version.pl
       - name: Install Perl dependencies
         run: sudo apt-get update && sudo apt-get install -y libmodule-build-perl libapache-session-perl libjson-perl libdbi-perl libdbd-sqlite3-perl libnet-ldap-perl libredis-perl libdbd-mysql-perl libdbd-pg-perl liblwp-protocol-psgi-perl libmariadb-dev libssl-dev cpanminus build-essential && sudo cpanm --notest DBD::MariaDB
       - name: Install OpenLDAP
