@@ -293,7 +293,12 @@ sub run_tests {
         my $rargs = $args;
         my $dbhOf = sub { tied( %{ $_[0] } )->{object_store}->{dbh} };
         my %s;
-        tie %s, $class, undef, $rargs;
+
+        # No reference to the tied object is kept: untie must free it
+        unless ( eval { tie %s, $class, undef, $rargs; 1 } ) {
+            fail("reuse: tie failed: $@");
+            last;
+        }
         $s{$_} = $data{dwho}->{$_} foreach ( keys %{ $data{dwho} } );
         my $rid  = $s{_session_id};
         my $rdbh = $dbhOf->( \%s );
