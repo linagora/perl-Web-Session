@@ -92,6 +92,10 @@ perl Build.PL
 ./Build install
 ```
 
+Run the tests through `./Build test` (or `prove -b` after `./Build`), not
+`prove -l`: some modules use AutoLoader, and their autosplit files exist only
+in `blib/`.
+
 Tests of database backends run only when the database is available: see
 `t/lib/SQLBackendTests.pm` and `.github/workflows/ci.yml` for the
 environment variables (`PG_DSN`, `MYSQL_DSN`, `MARIADB_DSN`, `REDIS_URL`,
