@@ -245,6 +245,64 @@ is(
     like( row($id)->[0], qr/^\{"_session_id":/, 'Row now canonical' );
 }
 
+# A handle without sqlite_unicode returns the stored text as UTF-8 bytes,
+# while the serializer produces characters: they must be compared as bytes
+{
+    my $bdbh = DBI->connect( "dbi:SQLite:dbname=$dbfile", '', '',
+        { RaiseError => 1, PrintError => 0, AutoCommit => 0 } );
+    my $bargs = { %$args, Handle => $bdbh };
+    my $read;
+    is(
+        ops(
+            sub {
+                my %s;
+                tie %s, $class, $id, $bargs;
+                $read = tied(%s)->{object_store}->{stored_serialized};
+                is( $s{cn}, $wide, 'Bytes handle: non-ASCII value read' );
+                my @keys = keys %s;
+                $s{$_} = $s{$_} foreach (@keys);
+                untie %s;
+            }
+        ),
+        'insert=0,update=0',
+        'Bytes handle, same values stored back: no UPDATE'
+    );
+    ok( !utf8::is_utf8($read) && $read =~ /[\x80-\xff]/,
+        'Bytes handle: row read as UTF-8 bytes' );
+    is(
+        ops(
+            sub {
+                my %s;
+                tie %s, $class, $id, $bargs;
+                $s{cn} = "\x{e9}";
+                untie %s;
+            }
+        ),
+        'insert=0,update=1',
+        'Bytes handle, change of a non-ASCII value: UPDATE'
+    );
+    is(
+        ops(
+            sub {
+                my %s;
+                tie %s, $class, $id, $bargs;
+                $s{cn} = "\x{e9}";
+                untie %s;
+            }
+        ),
+        'insert=0,update=0',
+        'Bytes handle, same Latin-1 character stored back: no UPDATE'
+    );
+    {
+        my %s;
+        tie %s, $class, $id, $args;
+        is( $s{cn}, "\x{e9}", 'Bytes handle: value written' );
+        $s{cn} = $wide;
+        untie %s;
+    }
+    $bdbh->disconnect;
+}
+
 is(
     ops(
         sub {

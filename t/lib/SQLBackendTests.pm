@@ -241,6 +241,51 @@ sub run_tests {
         $dbh->do( "DELETE FROM $table WHERE id=?", undef, $u8 );
     }
 
+    # Unchanged sessions are not rewritten. The row is changed behind the tied
+    # session, which then stores back the values it read: the row must be
+    # left as is. jsonb (PostgreSQL) and json (MySQL) columns return a
+    # normalized text, so this goes through the comparison of the data
+    $group->(
+        unchanged => sub {
+            my $id = $newSession->(
+                %{ $data{dwho} },
+                list => [ 1, { b => 2, a => 1 } ],
+                ( $o{utf8} ? ( cn => "\x{c9}lodie \x{3a9}" ) : () ),
+            );
+            my $other = to_json( { _session_id => $id, uid => 'other' } );
+            my $uid   = sub {
+                my $text = $dbh->selectrow_array(
+                    "SELECT a_session FROM $table WHERE id = ?",
+                    undef, $id );
+                return $text =~ /"uid"\s*:\s*"(\w+)"/ ? $1 : undef;
+            };
+            my $storeBack = sub {
+                my ( $targs, $change ) = @_;
+                my %s;
+                tie %s, $class, $id, $targs;
+                my @keys = keys %s;
+                $s{$_} = $s{$_} foreach (@keys);
+                $change->( \%s ) if ($change);
+                $dbh->do( "UPDATE $table SET a_session = ? WHERE id = ?",
+                    undef, $other, $id );
+                untie %s;
+            };
+
+            $storeBack->($args);
+            is( $uid->(), 'other', 'Same values stored back: no UPDATE' );
+
+            $dbh->do( "DELETE FROM $table WHERE id=?", undef, $id );
+            $id = $newSession->( %{ $data{dwho} } );
+            $other = to_json( { _session_id => $id, uid => 'other' } );
+            $storeBack->( $args, sub { $_[0]->{uid} = 'changed' } );
+            is( $uid->(), 'changed', 'Real change: UPDATE' );
+
+            $storeBack->( { %$args, RewriteUnchanged => 1 } );
+            is( $uid->(), 'changed', 'RewriteUnchanged: UPDATE' );
+            $dbh->do( "DELETE FROM $table WHERE id=?", undef, $id );
+        }
+    );
+
     # Connection reuse (default) and "noreuse" option
     {
         my $rargs = $args;
