@@ -352,6 +352,9 @@ Create table:
       a_session jsonb
   );
 
+C<UNLOGGED> tables are lost on a crash and not replicated to standby servers:
+see L</POSTGRESQL TUNING>.
+
 Optionally, add indexes on some fields. Example for Lemonldap::NG:
 
   CREATE INDEX uid1 ON sessions USING BTREE
@@ -575,6 +578,122 @@ Example with Lemonldap::NG:
 
 L<Web::Session::Patroni> has its own connection management and doesn't use
 this pool.
+
+=head1 POSTGRESQL TUNING
+
+=head2 Use "jsonb"
+
+Prefer C<jsonb> to C<json>. A C<json> column stores the text as received, so
+each C<-E<gt>E<gt>> is evaluated by parsing the document again, for each row
+read: searches on a field without index, sessions purge,
+get_key_from_all_sessions() and so on. C<jsonb> is stored in a decomposed
+binary form and doesn't need this parsing. Expression indexes (C<u1>, C<s1>...
+above) work with both types, but C<GinIndex> requires C<jsonb>. C<jsonb>
+refuses the C<\u0000> character that C<json> accepts: to convert an existing
+table, see the C<ALTER TABLE> command (and its lock and failure cases) in
+L</GIN INDEX>.
+
+=head2 Updates and autovacuum
+
+Sessions are updated often (C<_utime>, C<_lastSeen>). In PostgreSQL, each
+C<UPDATE> creates a new version of the row and leaves the old one as a dead
+tuple until (auto)vacuum removes it. Purge also leaves dead tuples. Moreover
+PostgreSQL can make an update HOT (heap-only tuple, the indexes are not
+touched) only if the B<columns> used by the indexes keep the same stored
+value: it compares the column values, it doesn't evaluate the indexed
+expressions. The expression indexes above all use C<a_session>, so an update
+that changes the session (C<_utime>, C<_lastSeen>...) is never HOT: it adds an
+entry to each index, including the primary key. This is also why the number
+of indexes directly drives the update cost (see the measures in
+L</GIN INDEX>): keep only the indexes you really use.
+
+For the same reason, lowering C<fillfactor> (which leaves free room in pages
+for HOT updates) brings little here as soon as the table has expression
+indexes on C<a_session>: only updates that write the session back unchanged
+can be HOT. It may help for a table that has only its primary key.
+
+A busy sessions table is better vacuumed more often than the default
+(20% of dead rows) allows. Per-table settings can be used without changing the
+configuration of the other tables:
+
+  ALTER TABLE sessions SET (
+      autovacuum_vacuum_scale_factor  = 0.02,
+      autovacuum_analyze_scale_factor = 0.05,
+      autovacuum_vacuum_cost_limit    = 1000
+  );
+
+The scale factors make autovacuum start after 2% of dead rows (5% of changes
+for statistics) instead of 20% (10% for statistics). A higher
+C<autovacuum_vacuum_cost_limit> (by default the global C<vacuum_cost_limit>,
+200) lets each run work faster, at the price of more I/O. These values are a
+starting point: check C<n_dead_tup>, C<last_autovacuum> and the table size in
+C<pg_stat_user_tables> and adjust.
+
+=head2 UNLOGGED table
+
+An C<UNLOGGED> table isn't written to the write-ahead log: writes are faster,
+but
+
+=over
+
+=item * the table is emptied after a crash or an unclean shutdown (a clean
+restart keeps it): all users have to authenticate again;
+
+=item * it isn't replicated to standby servers (and can't be read on a
+standby). After a failover (for example with L<Web::Session::Patroni>), the
+new primary has an empty sessions table.
+
+=back
+
+If sessions must survive a crash or a failover, create a normal table (or
+convert it with C<ALTER TABLE sessions SET LOGGED>, which rewrites the table).
+You then pay the WAL volume of the frequent updates, on the primary and on
+each replica.
+
+=head2 Connection poolers (PgBouncer)
+
+L<DBD::Pg> uses server-side prepared statements by default
+(C<pg_server_prepare>). With PgBouncer in C<transaction> pooling mode, the
+server connection may change between two statements, so a statement prepared
+earlier can be missing (C<prepared statement "dbdpg_p..." does not exist>).
+PgBouncer 1.21 and later can track them if C<max_prepared_statements> is set to
+a non-zero value; with older versions, or without it, disable server-side
+prepared statements. The module gives C<DataSource> to C<DBI-E<gt>connect()>
+as is, so the attribute can be set in the DSN, using the DBI syntax for
+attributes:
+
+  DataSource => 'dbi:Pg(pg_server_prepare=>0):dbname=sessions;host=pgbouncer',
+
+Without a pooler in transaction mode, keep the default (prepared statements
+save parsing time). Note that the connection pool described in
+L</Connection pool (KeepConnections)> already avoids reconnecting for each
+session: a pooler is mostly useful to limit the total number of connections
+when many processes (each with up to C<MaxIdle> connections) use the same
+server.
+
+=head2 Detecting dead connections
+
+A connection broken without being closed (firewall or NAT timeout, host
+down, failover) is detected by the kernel only after a long time by default
+(on Linux, 2 hours before the first keepalive probe). libpq parameters can be
+set in the DSN to detect it sooner on TCP connections:
+
+  DataSource => 'dbi:Pg:dbname=sessions;host=db;'
+              . 'keepalives_idle=30;keepalives_interval=10;keepalives_count=3',
+
+With these values, a dead peer is detected after about
+C<30 + 10 * 3 = 60> seconds. Where supported, C<tcp_user_timeout> (in
+milliseconds) also bounds the time to wait for unacknowledged data. This
+doesn't apply to Unix socket connections.
+
+=head2 Purge
+
+Lemonldap::NG removes expired sessions with a periodic purge that uses
+deleteIfLowerThan() and searchLt(). Indexes must be declared exactly as
+explained in L</SYNOPSIS> (C<u1>, C<ls1>, C<rt1>), else each run reads the
+whole table. A purge run after a long delay deletes many rows at once and
+leaves as many dead tuples for autovacuum: run it regularly, with the
+autovacuum settings above.
 
 =head1 SEE ALSO
 
