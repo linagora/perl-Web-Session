@@ -29,6 +29,7 @@ my %stores = (
     SQLite      => {},
     MariaDBJSON => {},
     Patroni     => {},
+    Cassandra   => {},
     Postgres    => { KeepConnections => 0 },
     Postgres2   => { Commit          => 0 },    # no pool without Commit
 );
@@ -37,7 +38,7 @@ foreach my $name ( sort keys %stores ) {
     ( my $mod = $name ) =~ s/\d+$//;
     my $store = "Web::Session::Store::$mod";
   SKIP: {
-        skip "$store not loadable", 6 unless eval "require $store; 1";
+        skip "$store not loadable", 10 unless eval "require $store; 1";
         @calls = ();
         my $session = sub {
             return {
@@ -55,6 +56,32 @@ foreach my $name ( sort keys %stores ) {
         is( $calls[0]->{private_ws_pid}, $$, "$name: pid in attributes" );
         ok( $calls[0]->{AutoInactiveDestroy}, "$name: AutoInactiveDestroy" );
         is_deeply( $calls[0], $calls[1], "$name: same process, same key" );
+
+        # A store connected before a fork(), used in the child: the handle
+        # (opened by another process) is replaced. A real fork() is tested
+        # in Web-Session-fork.t
+        my $s = $store->new;
+        $s->connection( $session->() );
+        my $dbh = $s->{dbh};
+        $dbh->{private_ws_pid} = $$ + 1;
+        $s->{materialize_sth} = 'parent statement';
+        @calls = ();
+        eval { $s->connection( $session->() ) };
+        is( $@,                    '', "$name: connection in the child" );
+        is( scalar @calls,         1,  "$name: inherited handle replaced" );
+        is( $s->{materialize_sth}, undef, "$name: statements forgotten" );
+
+        # Freed in the child: no commit on the parent's handle
+        $dbh = $s->{dbh};
+        $dbh->{private_ws_pid} = $$ + 1;
+        my $commits = 0;
+        {
+            no warnings 'redefine';
+            local *DBI::db::commit = sub { $commits++; 1 };
+            undef $s;
+        }
+        is( $commits, 0, "$name: no commit in the child" );
+        $dbh->{private_ws_pid} = $$;
     }
 }
 done_testing;

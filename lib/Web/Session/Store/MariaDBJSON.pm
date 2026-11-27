@@ -24,6 +24,7 @@ sub connectAttributes {
 sub connection {
     my ( $self, $session ) = @_;
     my $args = $session->{args};
+    Web::Session::Store::DBI::_forgetInheritedHandle($self);
 
     # Same as Apache::Session::Store::MySQL, with the right connection
     # attributes

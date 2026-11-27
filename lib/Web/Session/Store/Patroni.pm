@@ -20,6 +20,7 @@ sub connection {
     my $self    = shift;
     my $session = shift;
 
+    Web::Session::Store::DBI::_forgetInheritedHandle($self);
     return if ( defined $self->{dbh} );
 
     $self->{'table_name'} =
@@ -81,6 +82,15 @@ sub connection {
 
     #the programmer has to tell us what commit policy to use
     $self->{commit} = $session->{args}->{Commit} // 1;
+}
+
+# Apache::Session::Store::Postgres::DESTROY() commits: not in a child
+# created by fork() on the parent's handle (see _forgetInheritedHandle() in
+# Store/DBI.pm)
+sub DESTROY {
+    my $self = shift;
+    return if ( Web::Session::Store::DBI::_forgetInheritedHandle($self) );
+    $self->SUPER::DESTROY(@_);
 }
 
 sub _try {

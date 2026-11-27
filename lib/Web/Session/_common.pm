@@ -18,6 +18,10 @@ our $BatchSize = 1000;
 #   key, so each process gets (and caches) its own handle
 # - AutoInactiveDestroy: a handle inherited from the parent is not closed on
 #   the server when the child destroys it
+# Threads (ithreads) share the pid, but each one has its own interpreter, so
+# its own connect_cached() cache: a handle is never shared between threads.
+# A store connected before a fork is handled by _forgetInheritedHandle() in
+# Store/DBI.pm
 sub _forkSafeAttr {
     my ( $class, $attr ) = @_;
     return { %$attr, AutoInactiveDestroy => 1, private_ws_pid => $$ };
