@@ -28,6 +28,8 @@ package SQLBackendTests;
 #  - utf8_todo: reason why get_key_from_all_sessions() without fields doesn't
 #               return non-ASCII values yet (marks this test as TODO)
 #  - exact:   1 to check that searches are case and accent sensitive
+#  - deferredInsert: 1 if the backend inserts a new session at its untie,
+#             not at its tie (PgJSON with the connection pool)
 #  - explain: sub( $class, $dbh, $args ) returning a list of
 #             [ description, WHERE clause, index or array ref of indexes,
 #               statement ]:
@@ -218,6 +220,119 @@ sub run_tests {
             untie %session;
         }
     );
+
+    # New session with an id given by the caller (Lemonldap::NG's setId)
+    # that is already used, and new session still tied at the end of the
+    # program
+    $group->(
+        deferredInsert => sub {
+            {
+                no strict 'refs';
+                @{'SQLBackendTests::SetId::ISA'} = ($class);
+            }
+            my $id      = $newSession->( uid => 'first' );
+            my $setArgs = { %$args, setId => $id };
+            my $stored  = sub {
+                my ($v) = $dbh->selectrow_array(
+                    "SELECT a_session FROM $table WHERE id = ?",
+                    undef, $_[0] // $id );
+                return $v && JSON->new->decode($v)->{uid};
+            };
+            my %s;
+            ok( !eval { tie( %s, 'SQLBackendTests::SetId', undef, $setArgs ) },
+                'Deferred INSERT: new session with a used id, tie dies' );
+            is( $stored->(), 'first',
+                'Deferred INSERT: used id, other session kept' );
+
+            # The id is free at tie, another process inserts it before untie
+            my $race = 'r' x 64;
+            my $inserted = sub {
+                $dbh->do( "INSERT INTO $table (id, a_session) VALUES (?, ?)",
+                    undef, $race,
+                    JSON->new->encode( { _session_id => $race, uid => 'other' } )
+                );
+            };
+            ok( tie( %s, 'SQLBackendTests::SetId', undef,
+                    { %$args, setId => $race } ),
+                'Deferred INSERT: new session with a free id tied' );
+            $inserted->();
+            tied(%s)->delete;
+            untie %s;
+            is( $stored->($race), 'other',
+                'Deferred INSERT: deleted in its tie, other session kept' );
+            $dbh->do( "DELETE FROM $table WHERE id = ?", undef, $race );
+
+            my @warnings;
+            {
+                local $SIG{__WARN__} = sub { push @warnings, @_ };
+                tie %s, 'SQLBackendTests::SetId', undef,
+                  { %$args, setId => $race };
+                $inserted->();
+                $s{uid} = 'second';
+                ok( !eval { tied(%s)->save; 1 },
+                    'Deferred INSERT: id inserted since the tie, save() dies' );
+                untie %s;
+            }
+            like(
+                join( '', @warnings ),
+                qr/unable to store new session \Q$race\E/,
+                'Deferred INSERT: id inserted since the tie, untie warns'
+            );
+            is( $stored->($race), 'other',
+                'Deferred INSERT: other session not overwritten' );
+            $dbh->do( "DELETE FROM $table WHERE id = ?", undef, $race );
+
+            # _session_id changed while tied and not put back (Lemonldap::NG's
+            # hashed session store): the session is inserted under its id
+            {
+                my $other = 'c' x 64;
+                tie %s, $class, undef, $args;
+                my $tieId = $s{_session_id};
+                $s{_session_id} = $other;
+                $s{uid}         = 'changed';
+                untie %s;
+                is( $stored->($tieId), 'changed',
+                    'Deferred INSERT: changed id, inserted under the tie id' );
+                ok(
+                    !$dbh->selectrow_array(
+                        "SELECT count(*) FROM $table WHERE id = ?",
+                        undef, $other
+                    ),
+                    'Deferred INSERT: changed id, nothing under the other id'
+                );
+                $dbh->do( "DELETE FROM $table WHERE id = ?", undef, $tieId );
+            }
+
+            # In another process, so that the session is freed by the global
+            # destruction
+            my $script = <<'EOS';
+use strict;
+use JSON;
+my ( $class, $args ) = @ARGV;
+eval "require $class; 1" or die $@;
+our %session;
+tie %session, $class, undef, JSON->new->decode($args);
+print $session{_session_id};
+EOS
+            open(
+                my $fh, '-|', $^X, ( map { "-I$_" } @INC ),
+                '-e', $script, $class, JSON->new->encode($args)
+            ) or die $!;
+            my $new = <$fh>;
+            close $fh;
+            ok(
+                $new
+                  && $dbh->selectrow_array(
+                    "SELECT count(*) FROM $table WHERE id = ?",
+                    undef, $new
+                  ),
+                'Deferred INSERT: new session tied at the end of the program'
+                  . ' inserted'
+            );
+            $dbh->do( "DELETE FROM $table WHERE id IN (?, ?)",
+                undef, $id, $new // '' );
+        }
+    ) if ( $o{deferredInsert} );
 
     # Non-ASCII values, in Latin-1 range and beyond
     foreach my $v ( "\x{c9}lodie", "\x{c9}lodie \x{3a9}" ) {
@@ -1568,6 +1683,19 @@ sub run_tests {
     $drop->();
     $dbh->disconnect;
     done_testing();
+}
+
+# Lemonldap::NG's setId: the id of a new session is given by the caller. Its
+# @ISA is set by the deferredInsert group
+package SQLBackendTests::SetId;
+
+sub populate {
+    my $self = shift;
+    $self->SUPER::populate(@_);
+    $self->{generate} = sub {
+        $_[0]->{data}->{_session_id} = $_[0]->{args}->{setId};
+    };
+    return $self;
 }
 
 1;

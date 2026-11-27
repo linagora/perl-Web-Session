@@ -10,6 +10,7 @@ run_tests(
     driver => 'Pg',
     env    => 'PG',
     pool   => 1,
+    deferredInsert => 1,
     table  => 'asb_test_pgjson',
     create => [
 'CREATE TABLE __TABLE__ (id varchar(64) not null primary key, a_session jsonb)',

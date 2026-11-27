@@ -2,6 +2,7 @@ use strict;
 use warnings;
 no warnings 'once';
 use Test::More;
+use Scalar::Util ();
 
 # Connection pool of Web::Session::Store::Postgres (used by default with
 # Commit, disabled by KeepConnections => 0), without database: DBI
@@ -12,7 +13,7 @@ plan skip_all => 'DBI and Apache::Session are needed for this test'
 {
 
     package FakeDbh;
-    our ( @connects, @sql, $disconnects, $pings );
+    our ( @connects, @sql, @bound, $disconnects, $pings, $noRow );
 
     sub new {
         my ( $class, %attr ) = @_;
@@ -57,12 +58,18 @@ plan skip_all => 'DBI and Apache::Session are needed for this test'
     sub rollback { 1 }
 
     package FakeSth;
-    sub bind_param { 1 }
+
+    sub bind_param {
+        my ( $self, $i, $v ) = @_;
+        $self->{bind}->[ $i - 1 ] = $v;
+        return 1;
+    }
 
     # A statement fails if its connection has "fail" set
     sub execute {
-        my ($self) = @_;
-        push @FakeDbh::sql, $self->{sql};
+        my ( $self, @values ) = @_;
+        push @FakeDbh::sql,   $self->{sql};
+        push @FakeDbh::bound, [ @{ $self->{bind} || [] }, @values ];
         if ( $self->{Database}->{fail} ) {
             my $err = 'cannot execute UPDATE in a read-only transaction';
             $self->{HandleError}->( $err, $self, undef )
@@ -71,7 +78,7 @@ plan skip_all => 'DBI and Apache::Session are needed for this test'
         }
         return 1;
     }
-    sub fetchrow_arrayref { ['{}'] }
+    sub fetchrow_arrayref { $FakeDbh::noRow ? undef : ['{}'] }
     sub finish            { 1 }
 }
 
@@ -115,6 +122,7 @@ sub reset_pool {
     %Web::Session::Store::Postgres::IDLE = ();
     @FakeDbh::connects                    = ();
     @FakeDbh::sql                         = ();
+    @FakeDbh::bound                       = ();
     $FakeDbh::disconnects                 = 0;
     $FakeDbh::pings                       = 0;
 }
@@ -164,16 +172,282 @@ is( $FakeDbh::disconnects, 0, 'Connection not closed' );
     is( idle(),                    0, 'Lent: no longer idle' );
 }
 
-# A session is written at once, as without the pool
+# A new session is written once: its INSERT waits for the update that
+# follows, which inserts it with its data
+reset_pool();
+{
+    my $store = $class->new;
+    my $s     = session( Index => 'uid' );
+    $store->insert($s);
+    is( scalar @FakeDbh::connects, 1, 'insert(): connection taken at tie' );
+    is( scalar @FakeDbh::sql,      0, 'insert(): nothing written yet' );
+    $store->update($s);
+    is( scalar @FakeDbh::sql, 1, 'update() after insert(): one statement' );
+    like( $FakeDbh::sql[0], qr/^INSERT INTO .*"uid"/, 'It is the INSERT' );
+    $store->update($s);
+    is( scalar @FakeDbh::sql, 1, 'Saved again unchanged: nothing written' );
+    $s->{serialized} = '{"uid":"changed"}';
+    $store->update($s);
+    like( $FakeDbh::sql[1], qr/^UPDATE/, 'The next change updates' );
+}
+is( scalar @FakeDbh::sql, 2, 'Nothing written at untie' );
+
+# _session_id changed between tie and untie (Lemonldap::NG's hashed session
+# store): inserted under the id it had at tie
+reset_pool();
+{
+    my $store = $class->new;
+    my $s     = session();
+    my $id    = $s->{data}->{_session_id};
+    $store->insert($s);
+    $s->{data}->{_session_id} = 'cookie';
+    $store->update($s);
+    is( $FakeDbh::bound[0]->[0], $id, 'Changed id: inserted under the tie id' );
+    ok( !grep( { defined and $_ eq 'cookie' } map { @$_ } @FakeDbh::bound ),
+        'Changed id: nothing written under the other id' );
+    is( $s->{data}->{_session_id}, 'cookie', 'Changed id: session unchanged' );
+}
+
+# A new session untied without an update is inserted by DESTROY
+reset_pool();
+{
+    my $store = $class->new;
+    $store->insert( session() );
+}
+is( scalar @FakeDbh::sql, 1, 'Unmodified new session: inserted at untie' );
+like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'It is an INSERT' );
+is( idle(), 1, 'Connection given back after the INSERT' );
+
+# A new session still tied when the program ends: inserted by the END block
+# (_flushPending()), before the global destruction
+reset_pool();
+{
+    my $store = $class->new;
+    $store->insert( session() );
+    Web::Session::Store::Postgres::_flushPending();
+    is( scalar @FakeDbh::sql, 1, 'END: pending INSERT written' );
+    like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'END: it is the INSERT' );
+    Web::Session::Store::Postgres::_flushPending();
+    is( scalar @FakeDbh::sql, 1, 'END run twice: inserted once' );
+}
+is( scalar @FakeDbh::sql, 1, 'END: not inserted again by DESTROY' );
+is( idle(),               1, 'END: connection given back by DESTROY' );
+
+# Not inserted by END: written by update(), removed, freed, or lent by a
+# parent process
+reset_pool();
+{
+    my $s       = session();
+    my $updated = $class->new;
+    $updated->insert($s);
+    $updated->update($s);
+    my $r       = session();
+    my $removed = $class->new;
+    $removed->insert($r);
+    $removed->remove($r);
+    my $forked = $class->new;
+    $forked->insert( session() );
+    $forked->{dbh}->{private_ws_pid} = -1;
+    {
+        my $freed = $class->new;
+        $freed->insert( session() );
+    }
+    @FakeDbh::sql = ();
+    Web::Session::Store::Postgres::_flushPending();
+    is( scalar @FakeDbh::sql, 0, 'END: nothing else inserted' );
+}
+is( scalar @FakeDbh::sql, 0, 'END: forked store not inserted by DESTROY' );
+
+# Unmodified new session with indexed fields, inserted by DESTROY: the
+# pending INSERT holds copies of the id and of the indexed values, not the
+# session
+reset_pool();
+{
+    my $store = $class->new;
+    my $s     = session( Index => 'uid sn' );
+    $s->{data}->{sn} = 'Doe';
+    my $id = $s->{data}->{_session_id};
+    $store->insert($s);
+    Scalar::Util::weaken( my $weak = $s );
+    undef $s;
+    ok( !$weak, 'Pending INSERT: the session is not kept' );
+    undef $store;
+    like( $FakeDbh::sql[0], qr/^INSERT INTO .*"uid".*"sn"/,
+        'Unmodified new session with Index: INSERT of the indexed fields' );
+    is_deeply( $FakeDbh::bound[0], [ $id, '{}', 'dwho', 'Doe' ],
+        'Unmodified new session with Index: copied values inserted' );
+}
+
+# An id given by the caller (setId) is checked at tie: a used one makes the
+# tie die, as the INSERT at tie without the pool. A generated id isn't
+reset_pool();
+{
+    my $store = $class->new;
+    my $s     = session( setId => 'given' );
+    ok( !eval { $store->insert($s); 1 }, 'setId: used id, insert() dies' );
+    like( $@, qr/session id\d+ already exists/, 'setId: the error names it' );
+    is( scalar @FakeDbh::sql, 1, 'setId: one statement' );
+    like( $FakeDbh::sql[0], qr/^SELECT 1 FROM "sessions" WHERE id = \?$/,
+        'setId: it is the check' );
+    is_deeply( $FakeDbh::bound[0], [ $s->{data}->{_session_id} ],
+        'setId: the id is bound' );
+}
+is( scalar @FakeDbh::sql, 1, 'setId: used id, nothing inserted at untie' );
+is( idle(),               1, 'setId: used id, connection given back' );
+reset_pool();
+{
+    local $FakeDbh::noRow = 1;
+    my $store = $class->new;
+    my $s     = session( setId => 'given' );
+    ok( eval { $store->insert($s); 1 }, 'setId: free id, insert() succeeds' );
+    is( scalar @FakeDbh::sql, 1, 'setId: free id, checked, not inserted yet' );
+}
+like( $FakeDbh::sql[1], qr/^INSERT INTO/, 'setId: free id, inserted at untie' );
+
+# Created and removed in the same tie: never written
 reset_pool();
 {
     my $store = $class->new;
     my $s     = session();
     $store->insert($s);
-    is( scalar @FakeDbh::sql, 1, 'insert() writes at once' );
-    like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'It is an INSERT' );
+    $store->remove($s);
+}
+is( scalar @FakeDbh::sql, 0, 'Created then removed: nothing written' );
+
+# A failed INSERT at untie is a warning, and its connection is closed
+reset_pool();
+{
+    my @warnings;
+    local $SIG{__WARN__} = sub { push @warnings, @_ };
+    {
+        my $store = $class->new;
+        $store->insert( session() );
+        $store->{dbh}->{fail} = 1;
+    }
+    is( scalar @warnings, 1, 'Failed INSERT at untie: a warning' );
+    like( $warnings[0], qr/unable to store new session id\d+/,
+        'It names the session' );
+}
+is( idle(),                0, 'Failed INSERT: connection not kept' );
+is( $FakeDbh::disconnects, 1, 'Failed INSERT: connection closed' );
+
+# The pending INSERT keeps neither the session nor its arguments: with
+# Lemonldap::NG's cache wrapper, the arguments hold the store
+reset_pool();
+{
+    my $destroyed = 0;
+    no warnings 'redefine';
+    local *Web::Session::Store::Postgres::DESTROY = do {
+        my $orig = \&Web::Session::Store::Postgres::DESTROY;
+        sub { $destroyed++; $orig->(@_) };
+    };
+    use warnings 'redefine';
+    {
+        my $store = $class->new;
+        my $s     = session();
+        $s->{args}->{object_store} = $store;
+        $store->insert($s);
+    }
+    is( $destroyed, 1, 'Pending INSERT: no cycle through the arguments' );
+    is( scalar @FakeDbh::sql, 1, 'The session was inserted' );
+}
+
+# A failed deferred INSERT is not forgotten: a new save() inserts again
+# instead of updating (or deleting) a row that may be another session's
+reset_pool();
+{
+    my $store = $class->new;
+    my $s     = session();
+    $store->insert($s);
+    $store->{dbh}->{fail} = 1;
+    ok( !eval { $store->update($s); 1 }, 'Failed deferred INSERT dies' );
+    $store->{dbh}->{fail} = 0;
     $store->update($s);
-    like( $FakeDbh::sql[1], qr/^UPDATE/, 'update() updates' );
+    like( $FakeDbh::sql[1], qr/^INSERT INTO/, 'Retried save(): INSERT again' );
+    $s->{serialized} = '{"uid":"changed"}';
+    $store->update($s);
+    like( $FakeDbh::sql[2], qr/^UPDATE/, 'Once inserted: UPDATE' );
+    $store->remove($s);
+    like( $FakeDbh::sql[3], qr/^\s*DELETE/, 'remove() after update(): DELETE' );
+}
+is( scalar @FakeDbh::sql, 4, 'Nothing more written at untie' );
+reset_pool();
+{
+    my $store = $class->new;
+    my $s     = session();
+    $store->insert($s);
+    $store->{dbh}->{fail} = 1;
+    ok( !eval { $store->update($s); 1 }, 'Failed deferred INSERT' );
+    $store->{dbh}->{fail} = 0;
+    $store->remove($s);
+    is( scalar @FakeDbh::sql, 1, 'Then remove(): nothing deleted' );
+}
+is( scalar @FakeDbh::sql, 1, 'Removed: not inserted at untie' );
+
+# A failed INSERT at untie keeps the caller's $@
+reset_pool();
+{
+    local $SIG{__WARN__} = sub { };
+    $@ = 'previous error';
+    {
+        my $store = $class->new;
+        $store->insert( session() );
+        $store->{dbh}->{fail} = 1;
+    }
+    is( $@, 'previous error', "Failed INSERT at untie: \$@ kept" );
+}
+
+# Lent with a pending INSERT when the process forked: the child writes
+# nothing (the parent does)
+reset_pool();
+{
+    my $store = $class->new;
+    $store->insert( session() );
+    $store->{dbh}->{private_ws_pid} = -1;
+}
+is( scalar @FakeDbh::sql,      0, 'Fork: pending INSERT not written by child' );
+is( $FakeDbh::disconnects,     0, 'Fork: connection not closed' );
+is( idle(),                    0, 'Fork: connection not given back' );
+
+# Through Apache::Session: tie, untie
+SKIP: {
+    skip 'JSON is needed', 6 unless eval { require Web::Session::PgJSON; 1 };
+    my $pg = 'Web::Session::PgJSON';
+    my %h;
+    reset_pool();
+    tie %h, $pg, undef, {%base};
+    $h{uid} = 'dwho';
+    untie %h;
+    is( scalar @FakeDbh::sql, 1, 'tie: new session modified, one statement' );
+    like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'It is the INSERT' );
+    is( idle(), 1, 'Connection given back at untie' );
+
+    reset_pool();
+    tie %h, $pg, undef, {%base};
+    untie %h;
+    is_deeply( [ map { /^\s*(\w+)/ } @FakeDbh::sql ],
+        ['INSERT'], 'tie: new session unmodified, inserted at untie' );
+
+    reset_pool();
+    tie %h, $pg, undef, {%base};
+    tied(%h)->delete;
+    untie %h;
+    is( scalar @FakeDbh::sql, 0, 'tie: new session deleted, nothing written' );
+
+    reset_pool();
+    tie %h, $pg, 'a' x 64, {%base};
+    $h{uid} = 'dwho';
+    untie %h;
+    is_deeply( [ map { /^\s*(\w+)/ } @FakeDbh::sql ],
+        [ 'SELECT', 'UPDATE' ], 'tie: existing session, read then updated' );
+}
+
+# Without the pool, insert() writes at once
+reset_pool();
+{
+    my $store = $class->new;
+    $store->insert( session( KeepConnections => 0 ) );
+    like( $FakeDbh::sql[0], qr/^INSERT INTO/, 'Without pool: INSERT at once' );
 }
 
 # Two stores at once never share a connection
@@ -203,7 +477,7 @@ reset_pool();
     my $s     = session();
     $store->connection($s);
     $store->{dbh}->{fail} = 1;
-    ok( !eval { $store->insert($s); 1 }, 'Failed statement dies' );
+    ok( !eval { $store->update($s); 1 }, 'Failed statement dies' );
     ok( $store->{dbh}->{private_ws_error}, 'Its connection is flagged' );
 }
 is( idle(),                0, 'Error: connection not kept' );

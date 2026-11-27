@@ -722,6 +722,28 @@ shared handle. With a C<Handle>, the caller owns the transaction: C<Commit>
 is used as given (not set means not committed), as with
 L<Apache::Session::Postgres>.
 
+A new session is written once. Without the pool, as with L<Apache::Session>,
+the tie of a new session inserts it with its empty data, and its untie updates
+it with its data: two writes, the second one a new row version and an entry in
+each index. With the pool, the INSERT waits for the untie and writes the data
+then; a session untied unmodified is inserted at untie (one still tied when
+the program ends is inserted by an C<END> block, before the global
+destruction; a child process created by C<fork()> leaves those of its parent
+to it), and a session deleted in its own tie is never written. The connection
+is still taken when the session is tied, so an unreachable database still
+makes the tie fail. When the id of the new session is given by the caller
+(C<setId>, as Lemonldap::NG does), the tie checks that no session has it, and
+dies if one does, as the INSERT at tie does without the pool. If another
+process inserts this id between the tie and the untie, the INSERT fails: it is
+reported as a failed update (an explicit save() dies; at untie,
+L<Apache::Session> doesn't propagate the error, DBI warns and the INSERT is
+tried again when the store is freed, with a warning if it fails again), and
+the other session is left untouched, also when the new one is deleted in its
+tie. Until its untie, a new session can't be read nor found by another
+process.
+L<Web::Session::Patroni> doesn't defer the INSERT: it inserts a new session
+when it is tied, then updates it at untie.
+
 Example with Lemonldap::NG (the pool is used, no option needed):
 
   globalStorage        => 'Web::Session::PgJSON',

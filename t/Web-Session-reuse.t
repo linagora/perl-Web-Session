@@ -233,9 +233,12 @@ foreach my $name ( sort keys %stores ) {
     ok( $d1->{AutoCommit},       'Postgres pool: AutoCommit on' );
     isnt( refaddr($d1), refaddr($d2),
         'Postgres pool: two stores at once, two connections' );
-    ok( $stored->($sid1), 'Postgres pool: written at once' );
+    ok( !$stored->($sid1), 'Postgres pool: new session not written at tie' );
+    $s1->update( $session->($sid1) );
+    ok( $stored->($sid1), 'Postgres pool: written by its update, at once' );
     undef $s2;
     undef $s1;
+    ok( $stored->($sid2), 'Postgres pool: unmodified, inserted when freed' );
     ok( $d1->{Active}, 'Postgres pool: connection kept' );
     ok( $canWrite->(), 'Postgres pool: no transaction left open' );
     $s1 = $store->new;
