@@ -3,6 +3,7 @@ package Web::Session::Store::Postgres;
 use strict;
 
 use DBI;
+use Scalar::Util ();
 use Web::Session::Store::DBI;
 use Apache::Session::Store::Postgres;
 
@@ -27,9 +28,9 @@ our $VERSION = '1.0.0';
 #
 # In the pool, each statement of this store is its own transaction
 # (AutoCommit): it reads without a lock (Apache::Session::Store::DBI's
-# materialize, no FOR UPDATE; the lock manager is Null), so a transaction
-# around a tie protected nothing and cost a BEGIN and a COMMIT round trip
-# each. The Patroni store, whose materialize() locks the row, opens a
+# materialize, no FOR UPDATE; the lock manager is Null), and a tie writes once
+# (see insert()), so a transaction around a tie protected nothing and cost a
+# BEGIN and a COMMIT round trip each. The Patroni store, whose materialize() locks the row, opens a
 # transaction per tie on its pooled connection; _giveBack() never keeps a
 # connection inside a transaction.
 #
@@ -41,6 +42,7 @@ our $VERSION = '1.0.0';
 # a connection lent before the last drop is closed when given back
 our %DROPS;    # "datasource\0user" => count
 our %IDLE;   # "datasource\0user" => [ [ $dbh, $since ], ... ]
+my %PENDING;    # refaddr => store with a pending INSERT (weak), see END
 
 # Defaults of the MaxIdle, IdleTimeout and MaxLifetime arguments
 our $MAX_IDLE     = 4;       # idle connections kept per data source
@@ -280,6 +282,124 @@ sub _giveBack {
     eval { $dbh->disconnect };
 }
 
+# A new session written once. Apache::Session's TIEHASH saves a new session
+# at once (an INSERT of its empty data), then its untie saves it again with
+# its data (an UPDATE): two writes, the second one a new row version and an
+# entry in each index. On the pooled path the INSERT waits for the untie: the
+# update() that follows inserts the session with its data; a session untied
+# unmodified is inserted by DESTROY, or by the END block below if it is still
+# tied when the program ends; one removed in its own tie is never written.
+# The connection is still taken at tie, so an unreachable database still
+# fails the tie.
+#
+# Kept for the INSERT: the session id, the values of the indexed fields and
+# the list of these fields, copied. Neither the session nor its arguments:
+# Lemonldap::NG's cache wrapper keeps this store in the arguments
+# (object_store), a cycle that would keep both until the end of the program.
+sub insert {
+    my ( $self, $session ) = @_;
+    $self->connection($session);
+    return $self->SUPER::insert($session) unless defined $self->{pool_key};
+
+    # A generated id is random, no row has it. An id given by the caller
+    # (setId, as Lemonldap::NG does) may be used: the tie dies then, as the
+    # INSERT at tie does without the pool, so that the caller doesn't take
+    # another session's row for its new session
+    if ( $session->{args}->{setId} ) {
+        my $id  = $session->{data}->{_session_id};
+        my $sth = $self->{dbh}->prepare_cached( 'SELECT 1 FROM '
+              . $self->_quoteTable( $self->{table_name} )
+              . ' WHERE id = ?' );
+        $sth->execute($id);
+        my $used = $sth->fetchrow_arrayref;
+        $sth->finish;
+        die "Web::Session: session $id already exists\n" if ($used);
+    }
+    my $index = $session->{args}->{Index};
+    $index = [ ref($index) ? @$index : split( /\s+/, $index // '' ) ];
+    $self->{pending_insert} = {
+        data => {
+            map { ( $_ => $session->{data}->{$_} ) } '_session_id',
+            @$index
+        },
+        serialized => $session->{serialized},
+        args       => { Index => $index },
+    };
+    Scalar::Util::weaken( $PENDING{ Scalar::Util::refaddr($self) } = $self );
+    return 1;
+}
+
+# Stores of this process with a pending INSERT (weak references), inserted by
+# the END block if their session is still tied when the program ends. Not
+# from DESTROY: during the global destruction, DBI's objects may be freed
+# before the store, in an order that Perl doesn't specify. This END block
+# runs before DBI's, which this module loads first. A store lent a connection
+# by a parent process (fork) is left to the parent. Under mod_perl, END may
+# also run at the end of a request: an INSERT then only comes earlier, the
+# untie that follows updates the row
+END { _flushPending() }
+
+sub _flushPending {
+    foreach my $self ( grep { defined } values %PENDING ) {
+        my $dbh = $self->{dbh} or next;
+        next if ( $dbh->{private_ws_pid} != $$ );
+        my $pending = delete $self->{pending_insert} or next;
+        $self->_insertPending($pending);
+    }
+    %PENDING = ();
+}
+
+sub _forgetPending {
+    my ($self) = @_;
+    delete $PENDING{ Scalar::Util::refaddr($self) };
+    return delete $self->{pending_insert};
+}
+
+# A failure is reported as a warning, like a failed update at untie
+sub _insertPending {
+    my ( $self, $pending ) = @_;
+    local $@;
+    eval { $self->SUPER::insert($pending); 1 }
+      or warn "Web::Session: unable to store new session "
+      . "$pending->{data}->{_session_id}: $@";
+}
+
+sub update {
+    my ( $self, $session ) = @_;
+    return $self->SUPER::update($session) unless ( $self->{pending_insert} );
+
+    # Inserted under the id the session had at tie (the one checked there
+    # when given by setId): Lemonldap::NG's hashed session store changes
+    # _session_id while the session is tied and puts it back before untie.
+    # If it didn't, an UPDATE would match no row; an INSERT under the
+    # current id would create a session under another id
+    my $id = $self->{pending_insert}->{data}->{_session_id};
+    my $r  = $self->SUPER::insert(
+        {
+            %$session,
+            data => { %{ $session->{data} }, _session_id => $id },
+        }
+    );
+
+    # Forgotten once written only: after a failed INSERT, the row still
+    # doesn't exist, a new save() must insert it, not update another row.
+    # Remembered as written: saved again unchanged in this tie, the session
+    # is not rewritten (see _unchanged() in Store/DBI.pm)
+    $self->_forgetPending;
+    $self->_remember($session);
+    return $r;
+}
+
+sub remove {
+    my ( $self, $session ) = @_;
+
+    # Created and removed in the same tie: nothing was written, so nothing is
+    # deleted. A row with this id (given by setId, inserted by another
+    # process since the tie) is another session's
+    return 1 if ( $self->_forgetPending );
+    return $self->SUPER::remove($session);
+}
+
 # A connection of the pool lent outside of a store, for the duration of a
 # class method of Web::Session::PgJSON (callers check _poolApplies() first).
 # Returns a Web::Session::Store::Postgres::Loan object holding the handle in
@@ -314,8 +434,20 @@ sub connection {
 
 sub DESTROY {
     my $self = shift;
-    return if ( $self->_forgetInheritedHandle );
+
+    # Lent when the process forked: the connection belongs to the parent,
+    # which writes its pending session
+    if ( $self->_forgetInheritedHandle ) {
+        $self->_forgetPending;
+        return;
+    }
     return $self->SUPER::DESTROY(@_) unless defined $self->{pool_key};
+
+    # A new session untied without a successful update: inserted now, as it
+    # was tied. During the global destruction, the END block already did it
+    my $pending = $self->_forgetPending;
+    $self->_insertPending($pending)
+      if ( $pending and $self->{dbh} and ${^GLOBAL_PHASE} ne 'DESTRUCT' );
     _giveBack($self);
 }
 
