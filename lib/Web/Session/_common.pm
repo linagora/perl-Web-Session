@@ -9,6 +9,24 @@ our $VERSION = '1.0.0';
 # 1..1_000_000 fall back to the default (a huge value would break LIMIT)
 our $BatchSize = 1000;
 
+# Attributes of the handles used by class methods (searchOn(), ...), made fork
+# safe. These handles are shared through DBI->connect_cached(): in a pre-fork
+# server, if the parent called a class method before forking, every child
+# would get the parent's handle, so its socket: concurrent use corrupts the
+# protocol and a child exiting closes the parent's server connection.
+# - private_ws_pid: connect_cached() uses the attributes as part of its cache
+#   key, so each process gets (and caches) its own handle
+# - AutoInactiveDestroy: a handle inherited from the parent is not closed on
+#   the server when the child destroys it
+# Threads (ithreads) share the pid, but each one has its own interpreter, so
+# its own connect_cached() cache: a handle is never shared between threads.
+# A store connected before a fork is handled by _forgetInheritedHandle() in
+# Store/DBI.pm
+sub _forkSafeAttr {
+    my ( $class, $attr ) = @_;
+    return { %$attr, AutoInactiveDestroy => 1, private_ws_pid => $$ };
+}
+
 sub _tabInTab {
     my ( $class, $t1, $t2 ) = @_;
 

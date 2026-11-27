@@ -26,6 +26,7 @@ sub connection {
     my $self    = shift;
     my $session = shift;
 
+    $self->_forgetInheritedHandle;
     return if ( defined $self->{dbh} );
     $session->{args}->{Commit} =
       exists( $session->{args}->{Commit} ) ? $session->{args}->{Commit} : 1;
@@ -101,6 +102,7 @@ sub materialize {
 
 sub DESTROY {
     my $self = shift;
+    return if ( $self->_forgetInheritedHandle );
 
     if ( $self->{commit} ) {
         $self->{dbh}->commit;

@@ -68,8 +68,21 @@ Things to know:
 
 Each process (Apache or FastCGI worker...) keeps its connection(s) open: size
 the maximum number of connections of the database server for the number of
-processes, or use C<noreuse>. A handle belongs to the process that opened
-it: it is not meant to be used by a child created by C<fork()>.
+processes, or use C<noreuse>.
+
+=item *
+
+These connections are fork safe: a child created by C<fork()> (a pre-fork
+server starting its workers, for example) opens its own connection, and never
+uses, closes, commits nor rolls back a connection of its parent, even one held
+by a session tied before the fork. Such a session must still be untied in the
+process that tied it; using it in the child is not supported, because the
+parent's transaction (not committed yet, with the row of a new session or its
+lock with Patroni) is invisible to the child or blocks it. With C<noreuse> or
+a C<Handle> argument, the connection isn't shared and this protection doesn't
+apply: as with Apache::Session::Browseable, the child must not even destroy a
+session tied before the fork (it would close or commit the parent's
+connection).
 
 =item *
 

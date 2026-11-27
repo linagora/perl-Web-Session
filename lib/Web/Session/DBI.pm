@@ -291,7 +291,10 @@ sub _classDbh {
     my $password   = $args->{Password};
     my $dbh =
       DBI->connect_cached( $datasource, $username, $password,
-        { RaiseError => 1, AutoCommit => 1 } )
+        Web::Session::_common->_forkSafeAttr(
+            { RaiseError => 1, AutoCommit => 1 }
+        )
+      )
       || die $DBI::errstr;
     if ( $datasource =~ /^dbi:sqlite/i ) {
         $dbh->{sqlite_unicode} = 1;

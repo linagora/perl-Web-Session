@@ -32,7 +32,12 @@ sub _reusedHandle {
     my ( $self, $args, $datasource, $username, $password, $attr ) = @_;
     return undef
       if ( defined $self->{dbh} or $args->{noreuse} or exists $args->{Handle} );
-    my $dbh = DBI->connect_cached( $datasource, $username, $password, $attr )
+
+    # Fork safe, as the handles of the class methods (see _forkSafeAttr() in
+    # _common.pm): a child forked after the parent tied a session must not
+    # reuse the parent's handle, nor close its connection
+    my $dbh = DBI->connect_cached( $datasource, $username, $password,
+        Web::Session::_common->_forkSafeAttr($attr) )
       || die $DBI::errstr;
     $self->{reuse_rollback} =
       bless \$dbh, 'Web::Session::Store::DBI::Rollback'
@@ -40,11 +45,32 @@ sub _reusedHandle {
     return $dbh;
 }
 
+# In a child created by fork(), a store connected by the parent still holds
+# the parent's handle: connection() would return early and the child would
+# use the parent's socket. Handles of the connection cache and of the
+# PostgreSQL pool carry the pid of the process that opened them (see
+# _forkSafeAttr() in _common.pm): such a handle is forgotten with its
+# statements, neither closed (AutoInactiveDestroy) nor rolled back (see the
+# Rollback guard below), so that connection() opens one for this process.
+# Other handles (noreuse, Handle argument) are kept as is. Called by the
+# connection() of every store, also by those not inheriting from this class,
+# and by the DESTROY of the stores that commit there (the commit would go to
+# the parent's transaction). Returns true if the handle was forgotten
+sub _forgetInheritedHandle {
+    my ($self) = @_;
+    my $dbh = $self->{dbh} or return 0;
+    my $pid = $dbh->{private_ws_pid};
+    return 0 unless ( defined $pid and $pid != $$ );
+    delete @$self{ 'dbh', 'reuse_rollback', grep { /_sth\z/ } keys %$self };
+    return 1;
+}
+
 # connection() of stores whose parent class $class (an Apache::Session::Store
 # class) opens a connection with the attributes $attr and uses the Handle
 # argument as is
 sub _connection {
     my ( $self, $session, $class, $attr ) = @_;
+    _forgetInheritedHandle($self);
     my $args    = $session->{args};
     my $connect = $class->can('connection');
     my @credentials;
@@ -148,9 +174,11 @@ sub _quoteColumn {
 package Web::Session::Store::DBI::Rollback;
 
 # Ends the transaction left by a store using a reused handle (no-op if the
-# store committed it)
+# store committed it). Not in a child created by fork(): the transaction is
+# the parent's, on the parent's socket
 sub DESTROY {
     my $dbh = ${ $_[0] };
+    return if ( ( $dbh->{private_ws_pid} // $$ ) != $$ );
     local $@;
     eval { $dbh->rollback } if ( $dbh->{Active} and !$dbh->{AutoCommit} );
 }

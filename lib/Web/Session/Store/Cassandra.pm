@@ -17,6 +17,7 @@ sub connection {
     my $self    = shift;
     my $session = shift;
 
+    $self->_forgetInheritedHandle;
     return if ( defined $self->{dbh} );
 
     if ( exists $session->{args}->{Handle} ) {

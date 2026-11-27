@@ -7,6 +7,7 @@ use Web::Session::Store::MariaDBJSON;
 use Web::Session::Generate::SHA256;
 use Web::Session::Serialize::JSON;
 use Web::Session::MySQLJSON;
+use Web::Session::_common;
 
 our $VERSION = '1.0.0';
 our @ISA     = qw(Web::Session::MySQLJSON);
@@ -35,8 +36,9 @@ sub _classDbh {
         $datasource,
         $args->{UserName},
         $args->{Password},
-        Web::Session::Store::MariaDBJSON->connectAttributes(
-            $datasource)
+        Web::Session::_common->_forkSafeAttr(
+            Web::Session::Store::MariaDBJSON->connectAttributes($datasource)
+        )
     ) || die $DBI::errstr;
 }
 

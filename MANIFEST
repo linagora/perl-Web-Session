@@ -41,9 +41,11 @@ t/test-browseable-functions-using-SQLite.t
 t/test-sql-functions-using-SQLite.t
 t/Web-Session-aliases.t
 t/Web-Session-Cassandra.t
+t/Web-Session-classDbh-fork.t
 t/Web-Session-common.t
 t/Web-Session-DBI.t
 t/Web-Session-File.t
+t/Web-Session-fork.t
 t/Web-Session-LDAP-server.t
 t/Web-Session-LDAP.t
 t/Web-Session-lowerThan.t
@@ -73,6 +75,7 @@ t/Web-Session-Serialize-JSON.t
 t/Web-Session-SQLite.t
 t/Web-Session-Store-DBI.t
 t/Web-Session-Store-File.t
+t/Web-Session-Store-fork.t
 t/Web-Session-Store-MariaDBJSON.t
 t/Web-Session-Store-MySQL.t
 t/Web-Session-Store-Patroni.t

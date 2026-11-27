@@ -79,6 +79,7 @@ sub _flagError {
 
 sub connection {
     my ( $self, $session ) = @_;
+    $self->_forgetInheritedHandle;
     return if defined $self->{dbh};
     my $args = $session->{args};
     unless ( $args->{KeepConnections}
@@ -151,7 +152,8 @@ sub connection {
 
 sub DESTROY {
     my $self = shift;
-    my $key  = $self->{pool_key};
+    return if ( $self->_forgetInheritedHandle );
+    my $key = $self->{pool_key};
     return $self->SUPER::DESTROY(@_) unless defined $key;
     my $dbh = delete $self->{dbh} or return;
     local $@;    # disconnect() below must not clear the caller's $@

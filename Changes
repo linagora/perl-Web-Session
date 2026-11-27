@@ -12,7 +12,8 @@ Revision history for Perl extension Web::Session (formerly Apache::Session::Brow
     - PostgreSQL: optional connection pool (KeepConnections, MaxIdle,
       IdleTimeout, MaxLifetime), one connection per tied session, a new
       session written once
-    - DBI backends reuse their connection by default (noreuse to disable)
+    - DBI backends reuse their connection by default (noreuse to disable),
+      fork safe
     - searchLt() and searchGt() for SQL, Redis and LDAP backends
     - PgJSON: optional GIN index (GinIndex)
     - Quote table and column names; fix SQL injections through

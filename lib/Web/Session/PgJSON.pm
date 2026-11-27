@@ -329,7 +329,10 @@ sub _classDbh {
     my $password   = $args->{Password};
     my $dbh =
       DBI->connect_cached( $datasource, $username, $password,
-        { RaiseError => 1, AutoCommit => 1 } )
+        Web::Session::_common->_forkSafeAttr(
+            { RaiseError => 1, AutoCommit => 1 }
+        )
+      )
       || die $DBI::errstr;
     $dbh->{pg_enable_utf8} = 1;
     return $dbh;
