@@ -42,7 +42,7 @@ The `Release` workflow then:
    `Changes`, and that the tagged commit is on `master`;
 2. builds and tests the distribution `Web-Session-X.Y.Z.tar.gz`;
 3. builds the Debian package `libweb-session-perl_X.Y.Z-1_all.deb` (Debian
-   trixie, with `dh-make-perl`);
+   trixie, `dh-make-perl`, see `.github/build-deb.sh`; the CI builds it too);
 4. creates the GitHub release vX.Y.Z with both files as assets;
 5. uploads the distribution to CPAN, after approval in the `cpan`
    environment.

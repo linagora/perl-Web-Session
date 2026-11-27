@@ -69,31 +69,17 @@ jobs:
     container: debian:trixie
     env:
       VERSION: ${{ needs.check.outputs.version }}
-      DEBFULLNAME: Web::Session release
-      DEBEMAIL: noreply@github.com
-      DEB_BUILD_OPTIONS: nocheck
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: dist
 
-      - name: Install the packaging tools
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            dh-make-perl apt-file build-essential
-          apt-file update
-
       - name: Build the Debian package
         run: |
-          tar xzf "Web-Session-$VERSION.tar.gz"
-          cd "Web-Session-$VERSION"
-          dh-make-perl --packagename libweb-session-perl --vcs none
-          perl -0pi -e 's/^(Description:)/Recommends: libdbi-perl,\n            libredis-fast-perl | libredis-perl,\n            libnet-ldap-perl,\n            libio-socket-timeout-perl,\n            libauthen-sasl-perl\nSuggests: libdbd-pg-perl,\n          libdbd-mariadb-perl | libdbd-mysql-perl,\n          libdbd-sqlite3-perl,\n          libdbd-cassandra-perl,\n          libwww-perl\n$1/m' debian/control
-          dpkg-buildpackage -us -uc -b -Pnocheck
-          cd ..
+          sh .github/build-deb.sh "Web-Session-$VERSION.tar.gz"
           test -f "libweb-session-perl_$VERSION-1_all.deb"
-          dpkg-deb --info "libweb-session-perl_$VERSION-1_all.deb"
 
       - uses: actions/upload-artifact@v4
         with:
