@@ -19,6 +19,8 @@ Revision history for Perl extension Web::Session (formerly Apache::Session::Brow
     - Quote table and column names; fix SQL injections through
       deleteIfLowerThan() values and JSON field names
     - deleteIfLowerThan(): fix "and" and "not" rules, invalid rules
+    - PostgreSQL: deleteIfLowerThan() deletes by batches
+      ($Web::Session::_common::BatchSize)
     - Faster full scans (batches, no eval per row), index documentation
     - JSON serializer: decode UTF-8 bytes, Redis supports characters above
       U+00FF

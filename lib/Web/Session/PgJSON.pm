@@ -225,40 +225,46 @@ sub deleteIfLowerThan {
     # expression is the same as before, so the expression indexes are still
     # usable by the sub-select. Rows deleted by a concurrent purge are simply
     # not counted.
-    my $rows = eval {
+    my $total = 0;
+    my $ok    = eval {
         my $dbh = $class->_classDbh($args);
         my $table_name =
           Web::Session::_common->_tableName( $dbh, $args );
         my $limit = Web::Session::_common->_batchSize;
-        my $total = 0;
+        my $sql = $class->_deleteBatchStatement( $table_name, $query, $limit );
         while (1) {
-            my $n = $dbh->do(
-                "DELETE FROM $table_name WHERE id IN "
-                  . "(SELECT id FROM $table_name WHERE $query LIMIT $limit)",
-                undef, @bind
-            );
-            return undef unless defined $n;
-            $n = 0 if $n == -1;
+            my $n = $dbh->do( $sql, undef, @bind );
+            return 0 unless defined $n;
+
+            # Count unknown to the driver: a short batch can't be detected,
+            # go on while a session still matches
+            if ( $n == -1 ) {
+                last
+                  unless $dbh->selectrow_array(
+                    "SELECT 1 FROM $table_name WHERE $query LIMIT 1",
+                    undef, @bind );
+                next;
+            }
             $total += $n;
 
-            # A short batch means that nothing else matches
+            # A short batch means that nothing else matches (an exact
+            # multiple of the batch size costs one more, empty, batch)
             last if $n < $limit;
         }
-        $total;
+        1;
     };
-    if ($@) {
-        print STDERR "deleteIfLowerThan: $@\n";
-        return wantarray ? ( 0, 0 ) : 0;
+    unless ($ok) {
+        print STDERR "deleteIfLowerThan: $@\n" if ($@);
+        return wantarray ? ( 0, $total ) : 0;
     }
-    return wantarray ? ( 0, 0 ) : 0 unless defined $rows;
+    return wantarray ? ( 1, $total ) : 1;
+}
 
-    if (wantarray) {
-        $rows = 0 if $rows == -1;
-        return ( 1, $rows );
-    }
-    else {
-        return 1;
-    }
+# Statement of one batch of deleteIfLowerThan(), $where being the rule
+sub _deleteBatchStatement {
+    my ( $class, $table_name, $where, $limit ) = @_;
+    return "DELETE FROM $table_name WHERE id IN "
+      . "(SELECT id FROM $table_name WHERE $where LIMIT $limit)";
 }
 
 sub get_key_from_all_sessions {
@@ -530,8 +536,12 @@ accepted values: 1 to 1000000), the same variable that sets the size of the
 batches of get_key_from_all_sessions().
 
 The return value is unchanged: C<(1, $deleted)> in list context, C<1> in
-scalar context. If a batch fails, the error is printed on STDERR and C<(0, 0)>
-is returned; batches already executed stay committed. This also applies to
+scalar context. If a batch fails, the error is printed on STDERR and
+C<(0, $deleted)> is returned in list context (C<0> in scalar context),
+C<$deleted> being the number of sessions removed by the batches already
+executed, which stay committed (as L<Web::Session::LDAP> does). The first
+value stays false, so a caller such as the Lemonldap::NG purge still sees the
+failure and falls back to its slower purge. This also applies to
 L<Web::Session::Postgres> aliases and L<Web::Session::Patroni>.
 
 =head2 searchLt() and searchGt()
