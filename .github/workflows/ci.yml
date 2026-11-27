@@ -70,7 +70,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check that the versions are consistent
         run: perl .github/check-version.pl
       - name: Install Perl dependencies
@@ -122,6 +122,6 @@ jobs:
     timeout-minutes: 20
     container: debian:trixie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build the Debian package
         run: sh .github/build-deb.sh
