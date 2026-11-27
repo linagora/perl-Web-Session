@@ -86,8 +86,11 @@ block merges, corrupt stored sessions or make the maintainers unhappy.
   they print it on STDERR and, on the SQL backends, compare all
   sessions in Perl instead (a non numeric value is 0), returning `{}`
   only if that fails too. `deleteIfLowerThan()` prints the error and
-  returns `(0, 0)` (`0` in scalar context). LemonLDAP::NG's purge does
-  not catch exceptions. Keep that contract; it is documented in
+  returns a false first value (`0` in scalar context); the second value
+  is the number of sessions deleted before the failure (`0` unless a
+  purge deleting in several steps, such as LDAP's or a batched one,
+  failed midway), and LemonLDAP::NG then falls back to its full scan.
+  LemonLDAP::NG's purge does not catch exceptions. Keep that contract; it is documented in
   "ERRORS" in `Web::Session`.
 
 - A new backend needs: the two modules, an entry in `Build.PL`'s

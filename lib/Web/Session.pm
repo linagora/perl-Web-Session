@@ -383,11 +383,12 @@ skipped, a failure of the server dies as get_key_from_all_sessions() does.
 
 =item deleteIfLowerThan()
 
-An invalid rule or a database error prints the error on STDERR and returns
-C<(0, 0)> (C<0> in scalar context); success returns C<(1, $count)> (C<1>).
-Lemonldap::NG then falls back to its slower purge, reading all sessions.
-LDAP returns C<(0, $count)> when an error occurs after C<$count> deletions.
-Redis dies if the server fails.
+Success returns C<(1, $count)> (C<1> in scalar context). An invalid rule or a
+database error prints the error on STDERR and returns a false first value
+(C<0> in scalar context); the second value is the number of sessions deleted
+before the failure: C<0>, unless a purge that deletes in several steps (LDAP,
+for example) failed midway. Lemonldap::NG then falls back to its slower purge,
+reading all sessions. Redis dies if the server fails.
 
 =back
 
