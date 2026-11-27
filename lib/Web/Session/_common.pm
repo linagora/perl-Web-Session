@@ -147,19 +147,36 @@ sub _checkSearchValue {
     return $value;
 }
 
-# Run the SQL query of searchLt() and searchGt(): the database may reject
-# the comparison (a cast of a text column, for example). Print the error and
-# return an empty result, as the Perl version does for non numeric values
+# Run the SQL query $sub of searchLt() and searchGt(). The database may
+# reject the comparison: a cast fails as soon as one session has a value that
+# isn't an integer. The error is printed, then $scan compares the sessions in
+# Perl, as the generic search of Lemonldap::NG does. {} if the scan fails
+# too: these methods don't die (see "ERRORS" in Web::Session)
 sub _searchQuery {
-    my ( $class, $op, $sub ) = @_;
-    my $res = eval { $sub->() };
-    if ($@) {
-        my $err = $@;
-        chomp $err;
-        print STDERR 'search' . ( $op eq '<' ? 'Lt' : 'Gt' ) . ": $err\n";
-        return {};
-    }
-    return $res;
+    my ( $class, $op, $sub, $scan ) = @_;
+    my $name = 'search' . ( $op eq '<' ? 'Lt' : 'Gt' );
+    my $res  = eval { $sub->() };
+    return $res unless ($@);
+    my $err = $@;
+    chomp $err;
+    print STDERR "$name: $err\n";
+    return {} unless ($scan);
+    print STDERR "$name: comparing all sessions in Perl instead\n";
+    $res = eval { $scan->() };
+    return $res unless ($@);
+    $err = $@;
+    chomp $err;
+    print STDERR "$name: $err\n";
+    return {};
+}
+
+# Perl test of searchLt() and searchGt(), for _searchByTest(). Sessions
+# without the field are skipped, as by the SQL comparison
+sub _compareTest {
+    my ( $class, $op, $value ) = @_;
+    return $op eq '<'
+      ? sub { defined( $_[0] ) and $_[0] < $value }
+      : sub { defined( $_[0] ) and $_[0] > $value };
 }
 
 # Perl version of searchLt() and searchGt(): read all sessions and keep those

@@ -355,6 +355,46 @@ mixed-case names are not supported.
 
 Other drivers get the names unchanged.
 
+=head1 ERRORS
+
+The class methods don't report a database or directory error the same way:
+
+=over
+
+=item searchOn() and searchOnExpr()
+
+A failed query dies, as with Apache::Session::Browseable: the sessions
+explorer of Lemonldap::NG must show the error, not an empty list. With MySQL
+and MariaDB, a single row whose C<a_session> isn't valid JSON makes the query
+fail, so searchOn() dies.
+
+=item searchLt() and searchGt()
+
+They are used by the sessions purge of Lemonldap::NG, which doesn't catch
+exceptions. A value that isn't a number returns C<{}> and prints an error on
+STDERR. With PostgreSQL, MySQL, MariaDB and SQLite, if the SQL query fails
+(PostgreSQL can't cast a value that isn't an integer, for example), the error
+is printed on STDERR, then all sessions are read and compared in Perl, as the
+generic search of Lemonldap::NG does (a value that isn't a number is 0): the
+result is the same, only slower. C<{}> is returned only if reading the
+sessions fails too. With LDAP, an LDAP error returns C<{}> and prints a
+warning. Redis and Cassandra compare in Perl: a session that can't be read is
+skipped, a failure of the server dies as get_key_from_all_sessions() does.
+
+=item deleteIfLowerThan()
+
+An invalid rule or a database error prints the error on STDERR and returns
+C<(0, 0)> (C<0> in scalar context); success returns C<(1, $count)> (C<1>).
+Lemonldap::NG then falls back to its slower purge, reading all sessions.
+LDAP returns C<(0, $count)> when an error occurs after C<$count> deletions.
+Redis dies if the server fails.
+
+=back
+
+So an empty result of searchLt() or searchGt() doesn't always mean that no
+session matched: the error, if any, is on STDERR. There is no other error
+signal.
+
 =head1 SEE ALSO
 
 L<Apache::Session>, L<http://lemonldap-ng.org>,

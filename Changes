@@ -16,7 +16,9 @@ Revision history for Perl extension Web::Session (formerly Apache::Session::Brow
       (Commit => 0 to roll back at untie)
     - DBI backends reuse their connection by default (noreuse to disable),
       fork safe
-    - searchLt() and searchGt() for SQL, Redis and LDAP backends
+    - searchLt() and searchGt() for SQL, Redis and LDAP backends; if the SQL
+      comparison fails, sessions are compared in Perl (see "ERRORS" in
+      Web::Session)
     - PgJSON: optional GIN index (GinIndex)
     - SQL backends don't rewrite a session stored back unchanged
       (RewriteUnchanged to always write it); the JSON serializer sorts keys

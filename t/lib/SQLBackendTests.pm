@@ -683,6 +683,109 @@ EOS
         }
     );
 
+    # searchLt / searchGt when the SQL query fails: the error is printed,
+    # then the sessions are compared in Perl, with the same result
+    $group->(
+        searchFallback => sub {
+            no strict 'refs';
+            no warnings 'redefine';
+            foreach (
+                [ searchLt => _oidcRtUpdate => 200, 'dwho' ],
+                [ searchGt => _oidcRtUpdate => 200, 'rtyler' ],
+                [ searchLt => _utime        => 300, 'dwho,nokind,rtyler' ],
+              )
+            {
+                my ( $m, $f, $v, $expected ) = @$_;
+                my ( $res, $err ) = ( undef, '' );
+                {
+                    local *{"${class}::_buildCompareExpression"} =
+                      sub { 'no_such_column < 0' };
+                    local *STDERR;
+                    open STDERR, '>', \$err;
+                    $res = $class->$m( $args, $f, $v );
+                }
+                is( $name->($res), $expected,
+                    "$m $f $v: failed query, compared in Perl" );
+                like(
+                    $err,
+                    qr/^$m: .+^$m: comparing all sessions in Perl instead$/ms,
+                    "$m $f $v: errors printed"
+                );
+            }
+
+            # A value that isn't an integer is 0 (PostgreSQL can't cast it:
+            # compared in Perl). An index on the cast refuses to store it:
+            # this runs on the table without the CREATE INDEX statements, and
+            # is skipped if the table itself refuses it (MySQL generated
+            # columns in strict mode)
+            {
+                my $plain = "${table}_noindex";
+                ( my $sql = $o{create}->[0] ) =~ s/__TABLE__/$plain/g;
+                $dbh->do("DROP TABLE IF EXISTS $plain");
+                $dbh->do($sql);
+                local $args->{TableName} = $plain;
+                my %id = map {
+                    my $v = $_;
+                    my $sid = $quiet->(
+                        sub {
+                            eval {
+                                $newSession->(
+                                    uid           => "rt$v",
+                                    _oidcRtUpdate => $v
+                                );
+                            };
+                        }
+                    );
+                    ( $v => $sid )
+                } qw(150 abc 250);
+                my $all = $quiet->(
+                    sub { $class->get_key_from_all_sessions($args) } );
+              SKIP: {
+                    skip 'this table refuses a non numeric value', 2
+                      unless ( $id{abc}
+                        and ( $all->{ $id{abc} }->{_oidcRtUpdate} // '' ) eq
+                        'abc' );
+                    my $res = $quiet->(
+                        sub {
+                            $class->searchLt( $args, '_oidcRtUpdate', 200 );
+                        }
+                    );
+                    is_deeply(
+                        [ sort keys %$res ],
+                        [ sort @id{qw(150 abc)} ],
+                        'searchLt: a non numeric value is 0'
+                    );
+                    $res = $quiet->(
+                        sub {
+                            $class->searchGt( $args, '_oidcRtUpdate', 200 );
+                        }
+                    );
+                    is_deeply(
+                        [ keys %$res ],
+                        [ $id{250} ],
+                        'searchGt: a non numeric value is 0'
+                    );
+                }
+                $dbh->do("DROP TABLE IF EXISTS $plain");
+            }
+
+            # Both the query and the Perl comparison fail: nothing
+            my ( $res, $err ) = ( undef, '' );
+            {
+                local $args->{TableName} = 'no_such_table';
+                local *STDERR;
+                open STDERR, '>', \$err;
+                $res = $class->searchLt( $args, '_oidcRtUpdate', 200 );
+            }
+            is_deeply( $res, {}, 'searchLt: query and scan fail: nothing' );
+            like(
+                $err,
+                qr/^searchLt: comparing all sessions in Perl instead\n.*^searchLt: /ms,
+                'searchLt: query and scan fail: errors printed'
+            );
+        }
+    );
+
     # Case and accent sensitive searches, on indexed and non indexed fields
     if ( $o{exact} ) {
         # Character string: DBD::mysql sends other strings in Latin-1, which
@@ -1187,6 +1290,33 @@ EOS
             }
         );
     }
+    # Database errors are printed, not thrown
+    $group->(
+        deleteError => sub {
+            $reset->();
+            my ( @r, $r, $err );
+            {
+                local $args->{TableName} = 'no_such_table';
+                local *STDERR;
+                open STDERR, '>', \$err;
+                @r = $class->deleteIfLowerThan( $args,
+                    { or => { _utime => 200 } } );
+                $r = $class->deleteIfLowerThan( $args,
+                    { or => { _utime => 200 } } );
+            }
+            is_deeply( \@r, [ 0, 0 ],
+                'deleteIfLowerThan: database error returns (0, 0)' );
+            is( $r, 0, 'deleteIfLowerThan: database error returns 0' );
+            like(
+                $err,
+                qr/^deleteIfLowerThan: /m,
+                'deleteIfLowerThan: database error printed'
+            );
+            is( $remaining->(), 'dwho,nokind,obrien,rtyler',
+                'deleteIfLowerThan: database error: nothing deleted' );
+        }
+    );
+
     # Rules that can't be turned into SQL are rejected without exception;
     # an empty "not" is ignored
     $group->(
