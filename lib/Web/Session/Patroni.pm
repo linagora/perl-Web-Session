@@ -24,6 +24,11 @@ sub populate {
     return $self;
 }
 
+# Sessions use Web::Session::Store::Patroni, which doesn't use the
+# connection pool of Web::Session::Store::Postgres: class methods keep the
+# handle of _classDbh() (DBI connect_cached())
+sub _classPool { 0 }
+
 1;
 __END__
 
@@ -154,6 +159,20 @@ saves the write, not the lock.
 The database connection is kept open between sessions. Set
 C<noreuse =E<gt> 1> to open and close one for each session, see
 L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">.
+
+=head2 Class methods
+
+Class methods (searchOn(), searchOnExpr(), searchLt(), searchGt(),
+get_key_from_all_sessions(), deleteIfLowerThan()) don't query the Patroni
+API and don't use the connection pool of L<Web::Session::PgJSON>: they
+connect to the C<DataSource> found in their arguments, with the handle cached
+by DBI C<connect_cached()>. A tied session replaces C<DataSource> in its
+arguments by the DSN of the primary it found, so class methods called later
+with the same arguments hash use this primary; called with the configured
+arguments, they use the configured C<DataSource>. After a failover, they
+reach the new primary only if C<DataSource> follows it (virtual IP, DNS name
+or proxy such as HAProxy), or once a session tied with the same arguments
+has found it.
 
 =head1 SEE ALSO
 
