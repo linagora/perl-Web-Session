@@ -31,7 +31,8 @@ package SQLBackendTests;
 #               statement ]:
 #             the plan of each WHERE clause must use all these indexes.
 #             Statement defaults to "SELECT id" (use "DELETE" to explain a
-#             deletion)
+#             deletion); a sub( $table, $where ) returns the whole statement
+#             instead
 #  - explain_key:  1 to check that MySQL/MariaDB chooses these indexes, not
 #                  only lists them in possible_keys
 #  - explain_fill: number of sessions to add to a new table before explaining
@@ -1379,8 +1380,11 @@ sub run_tests {
               ref($indexes) ? @$indexes : ($indexes);
             my $index = join ',', @indexes;
             $statement ||= 'SELECT id';
-            my $sth =
-              $dbh->prepare("EXPLAIN $statement FROM $table WHERE $where");
+            my $sth = $dbh->prepare(
+                ref($statement)
+                ? 'EXPLAIN ' . $statement->( $table, $where )
+                : "EXPLAIN $statement FROM $table WHERE $where"
+            );
             $sth->execute;
             if ( $o{driver} eq 'Pg' ) {
                 my $plan = join "\n",

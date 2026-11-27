@@ -38,12 +38,23 @@ run_tests(
           qw(< >);
         my ( $wt, $sk ) =
           map { "a_session ->> '$_'" } qw(_whatToTrace _session_kind);
+
+        # The statement deleteIfLowerThan() really runs, one batch
+        my $batch = sub {
+            my ( $table, $where ) = @_;
+            return $class->_deleteBatchStatement( $table, $where, 1000 );
+        };
+        my $purge = "($ut OR $ls) AND ($sk IS NULL OR $sk <> 'Persistent')";
         return (
             [ 'deleteIfLowerThan', $ut, '__TABLE___u1' ],
             [
-                'deleteIfLowerThan "or" with "not"',
-                "($ut OR $ls) AND ($sk IS NULL OR $sk <> 'Persistent')",
+                'deleteIfLowerThan "or" with "not"', $purge,
                 [ '__TABLE___u1', '__TABLE___ls1' ]
+            ],
+            [ 'deleteIfLowerThan batch', $ut, '__TABLE___u1', $batch ],
+            [
+                'deleteIfLowerThan batch, "or" with "not"', $purge,
+                [ '__TABLE___u1', '__TABLE___ls1' ], $batch
             ],
             [ 'searchOnExpr', "$wt like 'dw%'", '__TABLE___uid1' ],
             [ 'searchOn',     "$wt = 'dwho'",   '__TABLE___uid1' ],
