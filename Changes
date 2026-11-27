@@ -14,6 +14,10 @@ Revision history for Perl extension Web::Session (formerly Apache::Session::Brow
       connection per tied session, a new session written once
     - PgJSON and Postgres: Commit is on by default when no Handle is given
       (Commit => 0 to roll back at untie)
+    - Patroni: uses the same pool, keyed by the primary node, with one
+      transaction per tied session (the row read stays locked until untie)
+    - PgJSON and Postgres: class methods (searchOn(), deleteIfLowerThan()...)
+      borrow a connection of the pool for each call
     - DBI backends reuse their connection by default (noreuse to disable),
       fork safe
     - searchLt() and searchGt() for SQL, Redis and LDAP backends; if the SQL
