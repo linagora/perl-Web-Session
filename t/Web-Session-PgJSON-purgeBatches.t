@@ -33,6 +33,7 @@ my $dbh;
 {
     no warnings 'redefine';
     *Web::Session::PgJSON::_classDbh   = sub { $dbh };
+    *Web::Session::PgJSON::_borrowDbh  = sub { ( $dbh, undef ) };
     *Web::Session::_common::_tableName = sub { 'sessions' };
 }
 
