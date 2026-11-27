@@ -545,6 +545,8 @@ is set (else they are in the sessions table, which then needs these indexes):
   -- Relying parties with a refresh token activity timeout
   CREATE INDEX o_rt1 ON oidcsessions
     ( ( cast(a_session ->> '_oidcRtUpdate' AS bigint) ) );
+  -- Backup of the refresh tokens (lemonldap-ng-sessions --refresh-tokens)
+  CREATE INDEX o_type ON oidcsessions ( (a_session ->> '_type') );
 
 =head2 Persistent sessions (persistentStorage)
 
