@@ -156,15 +156,12 @@ ok( $r->{$lat},   'Latin-1 value: searchOnExpr' );
 ok( !$r->{$wide}, 'Latin-1 value: searchOnExpr, wide value skipped' );
 $r = $class->searchOn( $args, 'uid', "m\x{e9}" );
 is_deeply( [ keys %$r ], [$lat], 'Latin-1 value: searchOn' );
-TODO: {
-    local $TODO = 'needs the value check of indexed searches (#85)';
-    $r = $class->searchOnExpr( $args, 'uid', "\x{3a9}*" );
-    ok( !$r->{$coll}, 'Wide characters: searchOnExpr, other value skipped' );
-    $r = $class->searchOn( $args, 'uid', $omega );
-    is_deeply( [ keys %$r ], [$om], 'Colliding names: wide value' );
-    $r = $class->searchOn( $args, 'uid', "\x{ce}\x{a9}" );
-    is_deeply( [ keys %$r ], [$coll], 'Colliding names: Latin-1 value' );
-}
+$r = $class->searchOnExpr( $args, 'uid', "\x{3a9}*" );
+ok( !$r->{$coll}, 'Wide characters: searchOnExpr, other value skipped' );
+$r = $class->searchOn( $args, 'uid', $omega );
+is_deeply( [ keys %$r ], [$om], 'Colliding names: wide value' );
+$r = $class->searchOn( $args, 'uid', "\x{ce}\x{a9}" );
+is_deeply( [ keys %$r ], [$coll], 'Colliding names: Latin-1 value' );
 
 $redis->flushdb;
 done_testing();

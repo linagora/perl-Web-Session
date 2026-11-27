@@ -6,17 +6,6 @@ use SQLBackendTests;
 # Works with DBD::MariaDB (dbi:MariaDB:...) and DBD::mysql (dbi:mysql:...)
 plan skip_all => 'Set MARIADB_DSN to run this test' unless $ENV{MARIADB_DSN};
 
-# Known bugs inherited from MySQLJSON
-our %TODO = (
-    searchOnData => 'session data is not decoded',
-    gkfasArray   => 'the query does not select the id column',
-    gkfasField   => 'the query does not select the id column',
-    deleteAnd    => '"and" rules are built from the "or" hash',
-    deleteNot    => 'sessions without the "not" field are never deleted',
-    deleteAndNot => '"and" rules are built from the "or" hash',
-    utf8Read     => 'non-ASCII values are read as bytes (fixed by #54)',
-);
-
 # Indexed field with a non-ASCII name, kept in UTF-8 so that DBD::mysql sends
 # UTF-8 bytes as well
 my $accented = "cl\x{e9}";
@@ -27,7 +16,6 @@ utf8::upgrade($accented);
 subtest 'Generated columns' => sub {
     run_tests(
         class  => 'Web::Session::MariaDBJSON',
-        todo   => \%TODO,
         env    => 'MARIADB',
         table  => 'asb_test_mariadbjson',
         create => [
@@ -106,7 +94,6 @@ subtest 'Generated columns' => sub {
 subtest 'JSON_VALUE only' => sub {
     run_tests(
         class  => 'Web::Session::MariaDBJSON',
-        todo   => \%TODO,
         env    => 'MARIADB',
         table  => 'asb_test_mariadbjson_plain',
         create => [
