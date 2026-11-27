@@ -434,6 +434,11 @@ sub _isDominated {
 
 sub deleteIfLowerThan {
     my ( $class, $args, $rule ) = @_;
+
+    # Same contract as the SQL backends: an invalid rule deletes nothing
+    return wantarray ? ( 0, 0 ) : 0
+      unless ( Web::Session::_common->_checkRule($rule)
+        and Web::Session::_common->_checkThresholds($rule) );
     my $deleted  = 0;
     my $redisObj = $class->_getRedis($args);
     my $index =

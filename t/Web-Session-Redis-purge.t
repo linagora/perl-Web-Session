@@ -41,4 +41,26 @@ ok( $dom->( $class, { %$sid, _lastSeen => 50 }, $and ),
     'and: missing _utime counts as lower' );
 ok( !$dom->( $class, { %$sid, _utime => 50 }, {} ), 'no rule: kept' );
 
+# Invalid rules are rejected before connecting, like the SQL backends
+{
+    my $err = '';
+    local *STDERR;
+    open STDERR, '>', \$err;
+    my $args = { server => '127.0.0.1:1' };
+    foreach my $bad (
+        [ 'not a hash ref'        => 'x' ],
+        [ 'or is not a hash ref'  => { or  => 'x' } ],
+        [ 'not is not a hash ref' => { not => [] } ],
+        [ 'non numeric threshold' => { or  => { _utime => '1 OR 1' } } ],
+      )
+    {
+        my ( $name, $rule ) = @$bad;
+        my @r = $class->deleteIfLowerThan( $args, $rule );
+        is_deeply( \@r, [ 0, 0 ], "invalid rule ($name): list context" );
+        my $r = $class->deleteIfLowerThan( $args, $rule );
+        is( $r, 0, "invalid rule ($name): scalar context" );
+    }
+    like( $err, qr/deleteIfLowerThan:/, 'invalid rules are reported' );
+}
+
 done_testing();
