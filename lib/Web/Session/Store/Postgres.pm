@@ -18,12 +18,12 @@ our $VERSION = '1.0.0';
 # handle and its transaction: untying one commits or rolls back what the
 # other has done so far.
 #
-# So the pool is the default connection reuse of this store when Commit is
-# set, noreuse isn't and no Handle is given. KeepConnections => 0 gives back
-# the connect_cached() handle of the other stores. Without Commit, writes
-# must not be committed (AutoCommit off, rolled back at untie), which the
-# pool, where each statement commits itself, can't do: connect_cached() is
-# kept.
+# So the pool is the default connection reuse of this store when writes are
+# committed (see _commit()), noreuse isn't set and no Handle is given.
+# KeepConnections => 0 gives back the connect_cached() handle of the other
+# stores. With Commit => 0, writes must not be committed (AutoCommit off,
+# rolled back at untie), which the pool, where each statement commits
+# itself, can't do: connect_cached() is kept.
 #
 # In the pool, each statement is its own transaction (AutoCommit): the store
 # reads without a lock (Apache::Session::Store::DBI's materialize, no FOR
@@ -85,18 +85,31 @@ sub _flagError {
     return 0;
 }
 
+# Commit policy of a session. Without a Handle, writes are committed unless
+# Commit is explicitly false: a missing or empty Commit keeps the default (as
+# the Patroni store does), else a session written without it would be rolled
+# back at untie. With a Handle, the caller owns the transaction: Commit is
+# used as given, as in Apache::Session::Store::Postgres
+sub _commit {
+    my ($args) = @_;
+    return $args->{Commit} if ( exists $args->{Handle} );
+    my $commit = $args->{Commit};
+    return ( defined $commit and $commit ne '' ) ? $commit : 1;
+}
+
 sub connection {
     my ( $self, $session ) = @_;
     $self->_forgetInheritedHandle;
     return if defined $self->{dbh};
     my $args = $session->{args};
+
     # KeepConnections is on unless explicitly disabled: a missing or empty
     # value (configuration interfaces may store an empty option as '') keeps
     # the default
     my $keep = $args->{KeepConnections};
     $keep = 1 unless ( defined $keep and $keep ne '' );
     unless ( $keep
-        and $args->{Commit}
+        and _commit($args)
         and !$args->{noreuse}
         and !exists $args->{Handle} )
     {
@@ -104,6 +117,7 @@ sub connection {
         $self->_connection( $session, 'Apache::Session::Store::Postgres',
             { RaiseError => 1, AutoCommit => 0 } );
         $self->{dbh}->{pg_enable_utf8} = 1;
+        $self->{commit} = _commit($args);
         return;
     }
     $self->{table_name} =
@@ -159,7 +173,7 @@ sub connection {
     $self->{pool_maxidle} = _intArg( $args, 'MaxIdle', $MAX_IDLE );
     $self->{pool_idle}    = $idleTimeout;
     $self->{pool_maxlife} = $maxLifetime;
-    $self->{commit}       = $args->{Commit};
+    $self->{commit}       = 1;
     $self->{disconnect}   = 0;
 }
 

@@ -9,9 +9,11 @@ Revision history for Perl extension Web::Session (formerly Apache::Session::Brow
       alias of MariaDBJSON
     - Drop the Oracle, Informix, Sybase and PgHstore backends
     - New MariaDBJSON backend
-    - PostgreSQL: optional connection pool (KeepConnections, MaxIdle,
-      IdleTimeout, MaxLifetime), one connection per tied session, a new
-      session written once
+    - PgJSON and Postgres: connection pool used by default (MaxIdle,
+      IdleTimeout, MaxLifetime; KeepConnections => 0 to disable), one
+      connection per tied session, a new session written once
+    - PgJSON and Postgres: Commit is on by default when no Handle is given
+      (Commit => 0 to roll back at untie)
     - DBI backends reuse their connection by default (noreuse to disable),
       fork safe
     - searchLt() and searchGt() for SQL, Redis and LDAP backends

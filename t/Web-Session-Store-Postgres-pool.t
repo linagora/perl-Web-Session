@@ -370,4 +370,57 @@ reset_pool();
 }
 is( idle(), 0, 'Handle: nothing in the pool' );
 
+# Commit is on by default without a Handle: a missing, undef or empty Commit
+# commits the writes, so the pool is used
+foreach (
+    [ 'Commit missing', sub { delete $_[0]->{Commit} } ],
+    [ 'Commit undef',   sub { $_[0]->{Commit} = undef } ],
+    [ "Commit ''",      sub { $_[0]->{Commit} = '' } ],
+  )
+{
+    my ( $label, $edit ) = @$_;
+    reset_pool();
+    {
+        my $s = session();
+        $edit->( $s->{args} );
+        my $store = $class->new;
+        $store->insert($s);
+        is( $store->{pool_key}, $key, "$label: pooled connection" );
+        ok( $store->{commit}, "$label: committed" );
+    }
+    is( idle(), 1, "$label: connection given back" );
+}
+
+# Also outside of the pool
+foreach (
+    [ 'noreuse without Commit',              noreuse         => 1 ],
+    [ 'KeepConnections => 0 without Commit', KeepConnections => 0 ],
+  )
+{
+    my ( $label, @args ) = @$_;
+    reset_pool();
+    my $s = session(@args);
+    delete $s->{args}->{Commit};
+    my $store = $class->new;
+    $store->insert($s);
+    ok( !defined $store->{pool_key}, "$label: no pool" );
+    ok( $store->{commit},            "$label: committed" );
+}
+
+# With a Handle, the caller owns the transaction: Commit is used as given
+reset_pool();
+{
+    my $s = session( Handle => FakeDbh->new( AutoCommit => 0 ) );
+    delete $s->{args}->{Commit};
+    my $store = $class->new;
+    $store->insert($s);
+    ok( !$store->{commit}, 'Handle without Commit: not committed' );
+}
+reset_pool();
+{
+    my $store = $class->new;
+    $store->insert( session( Handle => FakeDbh->new( AutoCommit => 0 ) ) );
+    ok( $store->{commit}, 'Handle with Commit: committed' );
+}
+
 done_testing();

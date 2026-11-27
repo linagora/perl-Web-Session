@@ -570,9 +570,8 @@ sessions purge ignores sessions without C<_oidcRtUpdate>.
 
 =head2 Persistent connection
 
-Database connections are kept open between sessions. With
-C<Commit =E<gt> 1> (always set it, see below), they are managed by the
-connection pool described below. Without C<Commit>, or with
+Database connections are kept open between sessions, managed by the
+connection pool described below. With C<Commit =E<gt> 0> or
 C<KeepConnections =E<gt> 0>, sessions use the handle shared by the sessions
 of the process, like the other SQL backends, see
 L<Web::Session/"PERSISTENT DATABASE CONNECTIONS">. Set C<noreuse =E<gt> 1> to
@@ -580,11 +579,10 @@ open and close one connection for each session instead.
 
 =head2 Connection pool (KeepConnections)
 
-By default, when C<Commit> is set, sessions use a pool of connections: each
-process keeps up to C<MaxIdle> idle connections per data source
-(C<DataSource> and C<UserName>), and lends each one to a single tied session
-at a time. The pool is not used without C<Commit>, with C<noreuse> or with a
-C<Handle>.
+By default, sessions use a pool of connections: each process keeps up to
+C<MaxIdle> idle connections per data source (C<DataSource> and C<UserName>),
+and lends each one to a single tied session at a time. The pool is not used
+with C<Commit =E<gt> 0>, with C<noreuse> or with a C<Handle>.
 
 Why a pool rather than the DBI C<connect_cached()> handle used by the other
 SQL backends:
@@ -621,12 +619,21 @@ Options:
 Set C<KeepConnections =E<gt> 0> to disable the pool and get back the previous
 behaviour: the handle cached by DBI C<connect_cached()>, shared by the
 sessions of the process, with C<AutoCommit> off and a transaction committed at
-untie. The pool is enabled by default, also when this option is empty.
+untie. Accepted values: C<0> (or C<'0'>) disables the pool; a missing,
+C<undef> or empty value keeps the default (enabled); any other value enables
+it. Strings such as C<'0.0'>, C<'off'> or C<'false'> are not C<0> and so
+enable the pool: use C<0>.
 
 =item MaxIdle
 
 Idle connections kept per process and data source, 4 by default. C<0> closes
-each connection at untie.
+each connection at untie. Size the C<max_connections> of the server for all
+the processes: each one keeps up to C<MaxIdle> idle connections, plus one per
+session tied at the moment. For example, 3 servers with 50 Apache or FastCGI
+workers each and the default C<MaxIdle> may keep C<3 * 50 * 4 = 600>
+connections open, more during peaks. Lower C<MaxIdle> (1 is enough when a
+worker handles one request at a time), or put a pooler in front of the
+server (see L</Connection poolers (PgBouncer)>).
 
 =item IdleTimeout
 
@@ -647,9 +654,13 @@ Expired idle connections are closed when another connection is given back. A
 connection given back recently is lent without a round trip; an older one is
 checked with C<ping()>.
 
-Without C<Commit>, the pool can't be used: changes must then be rolled back
-at untie, so the store keeps C<AutoCommit> off on the shared handle. Always
-set C<Commit =E<gt> 1> with this backend.
+C<Commit> is on by default (as with L<Web::Session::Patroni>): a missing or
+empty C<Commit> commits the writes, a session isn't rolled back at untie for
+lack of this option. With C<Commit =E<gt> 0>, changes are rolled back at
+untie, which the pool can't do: the store then keeps C<AutoCommit> off on the
+shared handle. With a C<Handle>, the caller owns the transaction: C<Commit>
+is used as given (not set means not committed), as with
+L<Apache::Session::Postgres>.
 
 Example with Lemonldap::NG (the pool is used, no option needed):
 
