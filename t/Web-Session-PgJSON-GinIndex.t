@@ -206,6 +206,9 @@ foreach (@tests) {
     my $current = $jsonb;
     my ($seen);
     my $connections = 0;
+
+    # The handle of _classDbh() (the pool would connect)
+    local *Web::Session::PgJSON::_classPool = sub { 0 };
     local *Web::Session::PgJSON::_classDbh =
       sub { $connections++; $current };
     local *Web::Session::PgJSON::_queryDbh =

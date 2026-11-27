@@ -89,12 +89,11 @@ sub _searchOnQuery {
 # The "a_session @> ..." conditions need a jsonb column: with a json column
 # every searchOn() would fail. Look the type up once per handle and table,
 # warn and fall back to the plain query when it is not jsonb. An unknown type
-# (table not created yet) isn't cached.
+# (table not created yet) isn't cached. $dbh (required) is the handle of the
+# caller's query, from _borrowDbh(): the caller keeps the loan until its query
+# is done.
 sub _jsonbColumn {
     my ( $class, $args, $dbh ) = @_;
-
-    my $loan;
-    ( $dbh, $loan ) = $class->_borrowDbh($args) unless ($dbh);
     my $table = $args->{TableName} || $Apache::Session::Store::DBI::TableName;
     my $cache = $dbh->{private_asb_pgjson_type} ||= {};
     unless ( defined $cache->{$table} ) {
@@ -634,11 +633,16 @@ parent.
 A callback given to get_key_from_all_sessions() runs while the call holds its
 connection: if it ties a session or calls a class method, they get another
 connection of the pool (or open one), never the one of the running call. The
-connection is given back even if the query or the callback dies.
+connection is given back even if the query or the callback dies. Each
+nesting level holds one more connection while it runs, and the pool sets no
+limit: a callback that calls get_key_from_all_sessions() again, or keeps
+several sessions tied, needs as many connections at once. Keep callbacks
+flat (collect the ids, then work on them after the call) when the server has
+a low C<max_connections>.
 
-Without the pool (no C<Commit>, C<KeepConnections =E<gt> 0> or C<noreuse>),
-class methods use the handle cached by DBI C<connect_cached()>, as before.
-They never use the C<Handle> argument.
+Without the pool (C<Commit =E<gt> 0>, C<KeepConnections =E<gt> 0> or
+C<noreuse>), class methods use the handle cached by DBI C<connect_cached()>,
+as before. They never use the C<Handle> argument.
 
 Why a pool rather than the DBI C<connect_cached()> handle used by the other
 SQL backends:

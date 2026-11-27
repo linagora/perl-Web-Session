@@ -7,7 +7,7 @@ use File::Spec;
 
 # Class methods of Web::Session::PgJSON borrow a connection of the pool of
 # Web::Session::Store::Postgres for the duration of each call, with the same
-# arguments as sessions (Commit set, KeepConnections not disabled, no noreuse,
+# arguments as sessions (Commit not 0, KeepConnections not disabled, no noreuse,
 # no Handle). Without database: DBI connections are mocked. The same methods
 # run against PostgreSQL in Web-Session-PgJSON.t (with the pool) and
 # Web-Session-PgJSON-noPool.t (without) when PG_DSN is set
