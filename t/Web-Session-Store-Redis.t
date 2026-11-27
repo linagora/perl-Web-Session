@@ -17,7 +17,8 @@ sub AUTOLOAD {
 
 package main;
 
-BEGIN { use_ok('Web::Session::Store::Redis') }
+plan skip_all => 'Redis module is needed'
+  unless eval { require Web::Session::Store::Redis; 1 };
 
 sub run {
     my ( $index, %extra ) = @_;
