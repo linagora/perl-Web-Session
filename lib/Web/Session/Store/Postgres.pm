@@ -25,10 +25,13 @@ our $VERSION = '1.0.0';
 # rolled back at untie), which the pool, where each statement commits
 # itself, can't do: connect_cached() is kept.
 #
-# In the pool, each statement is its own transaction (AutoCommit): the store
-# reads without a lock (Apache::Session::Store::DBI's materialize, no FOR
-# UPDATE; the lock manager is Null), so a transaction around a tie protected
-# nothing and cost a BEGIN and a COMMIT round trip each.
+# In the pool, each statement of this store is its own transaction
+# (AutoCommit): it reads without a lock (Apache::Session::Store::DBI's
+# materialize, no FOR UPDATE; the lock manager is Null), so a transaction
+# around a tie protected nothing and cost a BEGIN and a COMMIT round trip
+# each. The Patroni store, whose materialize() locks the row, opens a
+# transaction per tie on its pooled connection; _giveBack() never keeps a
+# connection inside a transaction.
 #
 # With the same arguments, the class methods of Web::Session::PgJSON borrow
 # a connection of this pool for the duration of each call (see _lend()), so
@@ -242,9 +245,10 @@ sub _giveBack {
     # Neither given back nor closed here (AutoInactiveDestroy)
     return if ( $dbh->{private_ws_pid} != $$ );
 
-    # Each statement committed itself (AutoCommit): the connection goes back
-    # to the idle ones, unless it met an error, is too old or was lent before
-    # its data source was dropped (a former Patroni primary). Expired idle
+    # The connection goes back to the idle ones with AutoCommit on (no
+    # transaction left open, see the Patroni store), unless it met an error,
+    # is too old or was lent before its data source was dropped (a former
+    # Patroni primary). Expired idle
     # connections (at the bottom of the stack, never reached when the pool
     # stays busy) are closed now
     my $now  = time;
@@ -265,6 +269,7 @@ sub _giveBack {
     } @$idle;
     if (    !$dbh->{private_ws_error}
         and $dbh->{Active}
+        and $dbh->{AutoCommit}
         and ( $DROPS{$key} // 0 ) == ( $loan->{pool_drops} // 0 )
         and $now - $dbh->{private_ws_born} <= $loan->{pool_maxlife}
         and @$idle < $loan->{pool_maxidle} )

@@ -98,12 +98,14 @@ connection).
 
 =item *
 
-Backends that use transactions (C<AutoCommit> off: SQLite, and PgJSON and
-Patroni outside the pool) end the transaction each time a session is untied,
-even after a failure: it is committed if C<Commit> is set, rolled back
-otherwise. PgJSON, Patroni and SQLite set C<Commit> by default when no
-C<Handle> is given. No transaction, and so no row lock taken by a write,
-stays open on the connection.
+Backends that use transactions (SQLite, Patroni, and PgJSON outside its
+pool) end the transaction each time a session is untied, even after a
+failure: it is committed if C<Commit> is set, rolled back otherwise. PgJSON,
+Patroni and SQLite set C<Commit> by default when no C<Handle> is given. No
+transaction, and so no row lock, stays open on the connection after untie.
+Patroni reads a session with C<SELECT ... FOR UPDATE>: its row stays locked
+from the tie to the untie, so two processes updating the same session wait
+for each other.
 
 =item *
 

@@ -160,8 +160,16 @@ Database connections are kept open between sessions. By default, sessions
 use the connection pool of L<Web::Session::PgJSON> (see "Connection pool
 (KeepConnections)" there, with its C<MaxIdle>, C<IdleTimeout> and
 C<MaxLifetime> options): each process keeps idle connections and lends each
-one to a single tied session at a time, each statement being its own
-transaction (C<AutoCommit> on).
+one to a single tied session at a time.
+
+As without the pool, each tie is one transaction: a session is read with
+C<SELECT ... FOR UPDATE>, so its row stays locked until untie, where the
+transaction is committed (C<Commit> is on by default) or rolled back. Two
+processes that update the same session at the same time (two Lemonldap::NG
+requests of the same user, for example) wait for each other instead of
+overwriting each other's changes. A connection goes back to the pool only
+once its transaction is ended; one whose transaction can't be ended is
+closed.
 
 The pool is keyed by the DSN of the primary node in use (the C<DataSource>
 with the host and port of the leader found through the Patroni API) and the

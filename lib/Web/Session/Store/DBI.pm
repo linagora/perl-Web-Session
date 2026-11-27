@@ -16,15 +16,16 @@ our $VERSION = '1.0.0';
 # Why AutoCommit differs between stores: each store opens its connection
 # with the attributes of the Apache::Session store it derives from.
 # Apache::Session::Store::Postgres uses AutoCommit off and commits in DESTROY
-# when Commit is set (it also locks the row with "SELECT ... FOR UPDATE", but
-# in Web::Session::Store::Postgres materialize() comes first from
-# Apache::Session::Store::DBI, which doesn't lock; Web::Session::Store::Patroni
-# calls Apache::Session::Store::Postgres's one and keeps the lock); the
-# Patroni and SQLite stores copy this model. Apache::Session::Store::MySQL
-# (MySQLJSON derives from it) was written for MyISAM, which has no
-# transaction: AutoCommit on. All SQL backends of this distribution use
-# Apache::Session::Lock::Null: with AutoCommit off, the transaction only
-# spans the reads and the write of one tie.
+# when Commit is set. Its materialize() locks the row with
+# "SELECT ... FOR UPDATE": the Patroni store uses it (through _try()), so a
+# Patroni session stays locked from the tie to the commit at untie, also with
+# the connection pool (one transaction per tie, see Store/Patroni.pm). The
+# Postgres store doesn't lock: its materialize() comes first from
+# Apache::Session::Store::DBI. The SQLite store copies the AutoCommit off
+# model. Apache::Session::Store::MySQL (MySQLJSON derives from it) was
+# written for MyISAM, which has no transaction: AutoCommit on. The lock
+# manager of all SQL backends is Apache::Session::Lock::Null: with AutoCommit
+# off, the transaction only spans the reads and the write of one tie.
 # Keeping each store's own attributes keeps its behaviour unchanged.
 #
 # Stores don't disconnect a handle they didn't open, so a transaction that

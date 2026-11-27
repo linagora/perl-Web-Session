@@ -110,6 +110,14 @@ sub connection {
 # checkMaster(). When the DSN changes, the idle connections to the former one
 # are closed at once instead of waiting for IdleTimeout, and those lent at
 # this time are closed when given back (see _dropIdle()).
+#
+# Pooled connections run with AutoCommit on, but this store keeps one
+# transaction per tie, as without the pool: its materialize() is the one of
+# Apache::Session::Store::Postgres (SELECT ... FOR UPDATE), and the row lock
+# must last until untie so that two requests updating the same session wait
+# for each other instead of overwriting each other's changes. The
+# transaction starts here, before the first statement on the lent
+# connection, and ends in DESTROY (see _endTransaction()).
 sub _pooledPrimary {
     my ( $self, $args, $commit ) = @_;
     foreach ( 0 .. 1 ) {
@@ -133,18 +141,54 @@ sub _pooledPrimary {
         }
     }
     die $@ if $@;
+    $self->{dbh}->begin_work;
     $self->{commit} = $commit;
+}
+
+# Ends the transaction of a tie on a pooled connection: committed if the
+# store commits and no statement failed, rolled back otherwise. A connection
+# whose transaction can't be ended is flagged, so that _giveBack() closes it:
+# a connection never goes back to the pool inside a transaction
+sub _endTransaction {
+    my ($self) = @_;
+    my $dbh = $self->{dbh} or return;
+
+    # Lent when the process forked: the transaction is the parent's
+    return if ( ( $dbh->{private_ws_pid} // 0 ) != $$ );
+    local $@;
+
+    # End of the program: the session is committed as without the pool, the
+    # connection is not given back (see _giveBack())
+    if ( ${^GLOBAL_PHASE} eq 'DESTRUCT' ) {
+        eval {
+            $dbh->commit
+              if ( $self->{commit} and $dbh->{Active} and !$dbh->{AutoCommit} );
+        };
+        return;
+    }
+    return if ( $dbh->{AutoCommit} );
+    my $ok = eval {
+        ( $self->{commit} and !$dbh->{private_ws_error} )
+          ? $dbh->commit
+          : $dbh->rollback;
+        1;
+    };
+    unless ( $ok and $dbh->{AutoCommit} ) {
+        eval { $dbh->rollback } unless ( $dbh->{AutoCommit} );
+        $dbh->{private_ws_error} = 1;
+    }
 }
 
 # Apache::Session::Store::Postgres::DESTROY() commits: not in a child
 # created by fork() on the parent's handle (see _forgetInheritedHandle() in
-# Store/DBI.pm). A pooled connection is given back instead: each statement
-# committed itself
+# Store/DBI.pm). A pooled connection ends its transaction and is given back
 sub DESTROY {
     my $self = shift;
     return if ( Web::Session::Store::DBI::_forgetInheritedHandle($self) );
-    return $self->Web::Session::Store::Postgres::_giveBack
-      if ( defined $self->{pool_key} );
+    if ( defined $self->{pool_key} ) {
+        $self->_endTransaction;
+        return $self->Web::Session::Store::Postgres::_giveBack;
+    }
     $self->SUPER::DESTROY(@_);
 }
 

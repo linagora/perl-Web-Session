@@ -267,20 +267,25 @@ foreach my $name ( sort keys %stores ) {
             serialized => '{}',
         };
     };
+    # One transaction per tie, as without the pool (the row read by
+    # materialize() stays locked until untie). The second store only
+    # connects: SQLite allows one writing transaction at a time
     my ( $s1, $s2 ) = ( $store->new, $store->new );
-    my ( $sid1, $sid2 ) = ( 'patroni-pool-' . $n++, 'patroni-pool-' . $n++ );
+    my $sid1 = 'patroni-pool-' . $n++;
     $s1->insert( $session->($sid1) );
-    $s2->insert( $session->($sid2) );
+    $s2->connection( $session->( 'patroni-pool-' . $n++ ) );
     my ( $d1, $d2 ) = ( $s1->{dbh}, $s2->{dbh} );
     ok( defined $s1->{pool_key}, 'Patroni: pool used by default' );
-    ok( $d1->{AutoCommit},       'Patroni pool: AutoCommit on' );
+    ok( !$d1->{AutoCommit}, 'Patroni pool: transaction open during the tie' );
     isnt( refaddr($d1), refaddr($d2),
         'Patroni pool: two stores at once, two connections' );
-    ok( $stored->($sid1), 'Patroni pool: written at once' );
+    ok( !$stored->($sid1), 'Patroni pool: not committed before untie' );
     undef $s2;
     undef $s1;
-    ok( $d1->{Active}, 'Patroni pool: connection kept' );
-    ok( $canWrite->(), 'Patroni pool: no transaction left open' );
+    ok( $stored->($sid1),  'Patroni pool: committed at untie' );
+    ok( $d1->{Active},     'Patroni pool: connection kept' );
+    ok( $d1->{AutoCommit}, 'Patroni pool: given back with AutoCommit on' );
+    ok( $canWrite->(),     'Patroni pool: no transaction left open' );
     $s1 = $store->new;
     $s1->connection( $session->($sid1) );
     is( refaddr( $s1->{dbh} ), refaddr($d1), 'Patroni pool: handle reused' );

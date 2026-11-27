@@ -112,6 +112,42 @@ is( $apiCalls,          1,       'Leader cache: no more API calls' );
 is( scalar @{ idle() }, 1,       'Still one idle connection' );
 is( idle()->[0]->[0],   $pooled, 'Same connection reused' );
 
+# The row read by a tie stays locked until untie (SELECT ... FOR UPDATE in
+# the transaction of the tie): a concurrent update of the same session waits
+{
+    my $other = DBI->connect(
+        $ENV{PG_DSN},
+        $user,
+        $ENV{PG_PASSWORD},
+        { RaiseError => 1, AutoCommit => 1, PrintError => 0 }
+    );
+    $other->do("SET lock_timeout = '500ms'");
+    my $lock = sub {
+        eval {
+            $other->do( "SELECT 1 FROM $table WHERE id = ? FOR UPDATE",
+                undef, $id );
+            1;
+        };
+    };
+    my %h;
+    tie %h, 'Web::Session::Patroni', $id, args();
+    ok( !$lock->(), 'Tied session: row locked' );
+    like( $@, qr/lock/i, 'Tied session: lock timeout' );
+    is( scalar @{ idle() }, 0, 'Tied session: connection lent' );
+    $h{a} = 'cc';
+    untie %h;
+    ok( $lock->(), 'Untied session: row unlocked' ) or diag $@;
+    $other->disconnect;
+}
+{
+    my %h;
+    tie %h, 'Web::Session::Patroni', $id, args();
+    is( $h{a}, 'cc', 'Update committed at untie' );
+    untie %h;
+}
+is( scalar @{ idle() }, 1, 'Connection given back after the transaction' );
+ok( idle()->[0]->[0]->{AutoCommit}, 'Given back with AutoCommit on' );
+
 {
     my %h;
     tie %h, 'Web::Session::Patroni', $id, args();

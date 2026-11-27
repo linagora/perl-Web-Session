@@ -20,7 +20,7 @@ plan skip_all => 'DBI, Apache::Session, JSON, LWP::Protocol::PSGI and '
 {
 
     package FakeDbh;
-    our ( @connects, @sql, $disconnects, %readonly, %down );
+    our ( @connects, @sql, $disconnects, %readonly, %down, $failCommit );
 
     sub new {
         my ( $class, $ds, %attr ) = @_;
@@ -53,8 +53,28 @@ plan skip_all => 'DBI, Apache::Session, JSON, LWP::Protocol::PSGI and '
         }, 'FakeSth';
     }
     *prepare = \&prepare_cached;
-    sub commit   { push @FakeDbh::sql, 'COMMIT';   1 }
-    sub rollback { push @FakeDbh::sql, 'ROLLBACK'; 1 }
+    # As DBI: begin_work turns AutoCommit off until commit() or rollback()
+    sub begin_work {
+        my ($self) = @_;
+        die "Already in a transaction\n" unless ( $self->{AutoCommit} );
+        push @FakeDbh::sql, "BEGIN ON $self->{Name}";
+        $self->{AutoCommit} = 0;
+        $self->{BegunWork}  = 1;
+        return 1;
+    }
+
+    sub _end {
+        my ( $self, $what ) = @_;
+        push @FakeDbh::sql, "$what ON $self->{Name}";
+        $self->{AutoCommit} = 1 if ( delete $self->{BegunWork} );
+        return 1;
+    }
+
+    sub commit {
+        die "commit failed\n" if ($FakeDbh::failCommit);
+        return $_[0]->_end('COMMIT');
+    }
+    sub rollback { $_[0]->_end('ROLLBACK') }
 
     package FakeSth;
     sub bind_param { 1 }
@@ -161,6 +181,7 @@ sub reset_all {
     %FakeDbh::readonly                           = ();
     %FakeDbh::down                               = ();
     $FakeDbh::disconnects                        = 0;
+    $FakeDbh::failCommit                         = 0;
     $leader                                      = '10.0.0.1';
     $apiCalls                                    = 0;
 }
@@ -168,6 +189,20 @@ sub reset_all {
 sub idle {
     my ($dsn) = @_;
     return scalar @{ $Web::Session::Store::Postgres::IDLE{"$dsn\0u"} || [] };
+}
+
+# First word of the statements run on $dsn (and BEGIN, COMMIT, ROLLBACK)
+sub statements {
+    my ($dsn) = @_;
+    return map { /^\s*(\w+)/ ? $1 : () }
+      grep { / ON \Q$dsn\E$/ } @FakeDbh::sql;
+}
+
+# Whether all idle connections to $dsn have AutoCommit on (no transaction)
+sub idle_autocommit {
+    my ($dsn) = @_;
+    return !grep { !$_->[0]->{AutoCommit} }
+      @{ $Web::Session::Store::Postgres::IDLE{"$dsn\0u"} || [] };
 }
 
 # Patroni messages on STDERR
@@ -198,7 +233,10 @@ $FakeDbh::down{$ds} = 1;
 }
 is( idle($node1), 1, 'Connection given back to the pool' );
 is( $FakeDbh::disconnects, 0, 'Connection not closed' );
-ok( !grep( { /^COMMIT/ } @FakeDbh::sql ), 'No commit() call (AutoCommit)' );
+is_deeply( [ statements($node1) ], [qw(BEGIN INSERT COMMIT)],
+    'One transaction per tie: BEGIN, INSERT, COMMIT' );
+ok( idle($node1) && idle_autocommit($node1),
+    'Given back with AutoCommit on' );
 
 # The next sessions (leader cache) reuse it
 {
@@ -249,6 +287,14 @@ is( idle($node1), 0, 'Failover: no idle connection to the former primary' );
 ok( !( grep { $_->{Active} } @old ),
     'Failover: connections to the former primary closed' );
 is( idle($node2), 1, 'New primary connection given back to the pool' );
+ok( grep( { $_ eq "ROLLBACK ON $node1" } @FakeDbh::sql ),
+    'Failover: transaction of the failed statement rolled back' );
+is_deeply(
+    [ ( statements($node2) )[ -3 .. -1 ] ],
+    [qw(BEGIN UPDATE COMMIT)],
+    'Failover: statement retried in a new transaction'
+);
+ok( idle_autocommit($node2), 'Failover: idle connections have AutoCommit on' );
 
 # Lent to another session at the time of the failover: closed when given
 # back, not kept with the idle connections of the former primary
@@ -291,6 +337,62 @@ ok( !$lentDbh->{Active}, 'Failover: lent connection closed when given back' );
     $store->update( session() );
     is( $store->{dbh}->{Name}, $node2,
         'Late connection to the former primary not lent' );
+}
+
+# Transactions on pooled connections: one per tie, the connection never
+# goes back to the pool inside one
+reset_all();
+$FakeDbh::down{$ds} = 1;
+quiet { $class->new->insert( session() ) };
+# A tie that reads then writes: the row read FOR UPDATE stays locked until
+# the commit at untie, nothing given back before
+{
+    @FakeDbh::sql = ();
+    my $s     = session();
+    my $store = $class->new;
+    $store->materialize($s);
+    is( idle($node1), 0, 'Transaction open: connection not idle' );
+    ok( !$store->{dbh}->{AutoCommit}, 'Transaction open: AutoCommit off' );
+    $store->update($s);
+}
+is_deeply( [ statements($node1) ], [qw(BEGIN SELECT UPDATE COMMIT)],
+    'materialize and update in one transaction, committed at untie' );
+ok( grep( { /FOR UPDATE/ } @FakeDbh::sql ), 'Row read FOR UPDATE' );
+ok( idle_autocommit($node1), 'Idle connections have AutoCommit on' );
+
+# A commit that fails: rolled back, the connection is closed, not idle
+{
+    my $store = $class->new;
+    $store->update( session() );
+    $FakeDbh::failCommit = 1;
+    @FakeDbh::sql        = ();
+    my $dbh = $store->{dbh};
+    undef $store;
+    $FakeDbh::failCommit = 0;
+    is( $FakeDbh::sql[-1], "ROLLBACK ON $node1", 'Failed commit: rolled back' );
+    ok( !$dbh->{Active}, 'Failed commit: connection closed' );
+}
+ok( idle_autocommit($node1), 'Failed commit: no idle connection in a transaction' );
+
+# _giveBack() never keeps a connection inside a transaction
+{
+    my $dbh = FakeDbh->new( $node1, AutoCommit => 1, private_ws_pid => $$,
+        private_ws_born => time );
+    $dbh->begin_work;
+    my $idle = idle($node1);
+    Web::Session::Store::Postgres::_giveBack(
+        {
+            dbh          => $dbh,
+            pool_key     => "$node1\0u",
+            pool_drops   => $Web::Session::Store::Postgres::DROPS{"$node1\0u"}
+              // 0,
+            pool_maxidle => 10,
+            pool_idle    => 120,
+            pool_maxlife => 3600,
+        }
+    );
+    is( idle($node1), $idle, 'Open transaction: not given back' );
+    ok( !$dbh->{Active}, 'Open transaction: connection closed' );
 }
 
 # No Commit: Patroni commits by default, the pool is used
