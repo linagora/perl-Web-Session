@@ -70,7 +70,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - name: Check that the versions are consistent
+        run: perl .github/check-version.pl
       - name: Install Perl dependencies
         run: sudo apt-get update && sudo apt-get install -y libmodule-build-perl libapache-session-perl libjson-perl libdbi-perl libdbd-sqlite3-perl libnet-ldap-perl libredis-perl libdbd-mysql-perl libdbd-pg-perl liblwp-protocol-psgi-perl libmariadb-dev libssl-dev cpanminus build-essential && sudo cpanm --notest DBD::MariaDB
       - name: Install OpenLDAP
@@ -114,3 +116,12 @@ jobs:
           MARIADB_DSN='dbi:MariaDB:database=sessions;host=127.0.0.1;port=3308' prove -b t/Web-Session-MariaDBJSON.t
           MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3308' prove -b t/Web-Session-MariaDBJSON.t
           MARIADB_DSN='dbi:mysql:database=sessions;host=127.0.0.1;port=3307' prove -b t/Web-Session-MariaDBJSON.t
+
+  deb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the Debian package
+        run: sh .github/build-deb.sh
