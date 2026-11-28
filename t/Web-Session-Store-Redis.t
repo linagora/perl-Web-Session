@@ -2,6 +2,10 @@ use strict;
 use warnings;
 use Test::More;
 
+# Lets the HEXPIRE probe cache be tested across time
+our $fakeTime;
+BEGIN { *CORE::GLOBAL::time = sub () { $main::fakeTime // CORE::time } }
+
 # Store::Redis::update with a mock Redis object (no server needed)
 package MockRedis;
 sub new { bless { calls => [] }, shift }
@@ -105,7 +109,7 @@ is( ttl( { _utime => $now }, utimeOffset => '00' ),
 {
 
     package MockTx;
-    our ( %queueErr, %execErr, %croak );
+    our ( %queueErr, %execErr, %croak, $execReply );
     sub new { bless { calls => [], cbs => [] }, shift }
 
     sub AUTOLOAD {
@@ -120,12 +124,13 @@ is( ttl( { _utime => $now }, utimeOffset => '00' ),
         my $n = grep { $_->[0] !~ /^(?:multi|exec)$/ } @{ $self->{calls} };
         push @{ $self->{cbs} }, sub {
             if ( $m eq 'exec' ) {
+                return $cb->($execReply) if ($execReply);
                 return $cb->( undef, 'EXECABORT Transaction discarded' )
                   if ( grep { $queueErr{ $_->[0] } } @{ $self->{calls} } );
                 $cb->(
                     [
                         map { [ 1, $execErr{ $_->[0] } ] }
-                        grep { $_->[0] !~ /^(?:multi|exec)$/ }
+                        grep { $_->[0] !~ /^(?:get|multi|exec)$/ }
                           @{ $self->{calls} }
                     ]
                 );
@@ -222,6 +227,35 @@ sub tx {
         'Redis without HEXPIRE: write fails' );
     like( $@, qr/^utimeOffset needs Redis >= 7\.4 or Valkey >= 9: \[hexpire\]/,
         'Redis without HEXPIRE: explicit error' );
+
+    local $MockTx::queueErr{hexpire} =
+      "NOPERM User app has no permissions to run the 'hexpire' command";
+    ok( !eval { tx( 'insert', { uid => 'dwho', _utime => $now } ); 1 },
+        'HEXPIRE forbidden: write fails' );
+    like( $@, qr/^\[hexpire\] NOPERM/, 'HEXPIRE forbidden: error of Redis' );
+}
+# set, srem, hset, hexpire
+foreach my $bad ( [], ['OK'], [ ( [ 1, undef ] ) x 3, 'QUEUED' ], 'OK' ) {
+    local $MockTx::execReply = $bad;
+    ok( !eval { tx( 'insert', { uid => 'dwho', _utime => $now } ); 1 },
+        'unexpected EXEC reply: write fails' );
+    is( $@, "[exec] unexpected reply\n", 'unexpected EXEC reply: error' );
+}
+{
+    my $store = bless { cache => MockRedis->new },
+      'Web::Session::Store::Redis';
+    $store->insert(
+        {
+            data       => { _session_id => 'id1', _utime => $now },
+            serialized => '{}',
+            args       => { Index => '', utimeOffset => 60 },
+        }
+    );
+    my $calls = $store->{cache}->{calls};
+    my $ttl   = splice( @{ $calls->[0] }, 4 );
+    is_deeply( $calls, [ [ 'set', 'id1', '{}', 'EX' ] ],
+        'insert without index: no transaction' );
+    near( $ttl, 60, 'insert without index: expiration' );
 }
 {
     local $MockTx::execErr{srem} = 'WRONGTYPE Operation against a key';
@@ -293,9 +327,42 @@ sub tx {
         'Redis without HEXPIRE: explicit error' );
     $FakeHexpire::err = 'WRONGTYPE Operation against a key';
     ok( eval { $check->( $r, { server => 'b' } ); 1 }, 'WRONGTYPE: supported' );
-    $FakeHexpire::err = "READONLY You can't write against a read only replica";
-    ok( eval { $check->( $r, { server => 'r' } ); 1 },
-        'other errors left to the commands' );
+    $FakeHexpire::calls = 0;
+    ok( !eval { $check->( $r, { server => 'a' } ); 1 },
+        'Redis without HEXPIRE: remembered' );
+    is( $FakeHexpire::calls, 0, 'Redis without HEXPIRE: not probed again' );
+    like( $@, qr/^utimeOffset needs Redis >= 7\.4/,
+        'Redis without HEXPIRE: same error' );
+
+    $FakeHexpire::err =
+      "[hexpire] NOPERM User app has no permissions to run the 'hexpire' command";
+    $FakeHexpire::calls = 0;
+    ok( eval { $check->( $r, { server => 'n' } ) foreach ( 1 .. 3 ); 1 },
+        'NOPERM left to the commands' );
+    is( $FakeHexpire::calls, 1, 'NOPERM: probed once' );
+
+    $FakeHexpire::err =
+      "[hexpire] READONLY You can't write against a read only replica.";
+    $FakeHexpire::calls = 0;
+    local $fakeTime = CORE::time;
+    ok( eval { $check->( $r, { server => 'r' } ) foreach ( 1 .. 3 ); 1 },
+        'READONLY left to the commands' );
+    is( $FakeHexpire::calls, 1, 'READONLY: probed once' );
+    $fakeTime += $Web::Session::Store::Redis::READONLY_RETRY - 1;
+    $check->( $r, { server => 'r' } );
+    is( $FakeHexpire::calls, 1, 'READONLY: not probed again before the delay' );
+    $fakeTime += 1;
+    $FakeHexpire::err = undef;
+    $check->( $r, { server => 'r' } );
+    is( $FakeHexpire::calls, 2, 'READONLY: probed again after the delay' );
+    $fakeTime += 3600;
+    $check->( $r, { server => 'r' } );
+    is( $FakeHexpire::calls, 2, 'promoted replica: support remembered' );
+
+    $FakeHexpire::err = '[hexpire] Error while reading from Redis server';
+    $FakeHexpire::calls = 0;
+    $check->( $r, { server => 't' } ) foreach ( 1, 2 );
+    is( $FakeHexpire::calls, 2, 'other errors: probed again' );
     $FakeHexpire::err = undef;
     $FakeHexpire::calls = 0;
     $check->( $r, { sentinels => [ 'c', 'd' ] } ) foreach ( 1, 2 );

@@ -90,9 +90,9 @@ ok( $redis->hexists( "hidx:_utime_$now", $legacy ),
     'rewritten: same value in index hash' );
 
 # Expired by Redis: no orphan left
-my $short = newSession( $args, uid => 'short', _utime => $now - 3600 + 2 );
+my $short = newSession( $args, uid => 'short', _utime => time - 3600 + 4 );
 ok( $redis->hexists( 'hidx:uid_short', $short ), 'short session indexed' );
-sleep 4;
+sleep 6;
 ok( !$redis->exists($short),           'short session expired' );
 ok( !$redis->exists('hidx:uid_short'), 'its index hash expired too' );
 is_deeply( $class->searchOn( $args, 'uid', 'short' ), {},

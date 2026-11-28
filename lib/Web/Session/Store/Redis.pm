@@ -40,7 +40,7 @@ sub hashIndexName {
     return keyName("$HASH_INDEX_PREFIX${field}_$value");
 }
 
-# '00' is true
+# '00' is truthy: the numeric test disables it
 sub hashIndex {
     my ($args) = @_;
     return ( $args->{utimeOffset} and $args->{utimeOffset} > 0 );
@@ -65,8 +65,12 @@ sub new {
     bless $self, $class;
 }
 
-# Servers known to support HEXPIRE
+# Result of the HEXPIRE probe per server: 1 if supported, otherwise
+# [ time of the next probe (undef: never), error to raise ]
 our %hexpire;
+
+# Seconds before probing again a read-only replica
+our $READONLY_RETRY = 60;
 
 # Fail at tie time: Apache::Session updates the session at untie, where an
 # error is only a warning
@@ -74,10 +78,21 @@ sub _checkHexpire {
     my ( $redisObj, $args ) = @_;
     my $server = join ' ',
       map { ref($_) ? @$_ : $_ // '' } @$args{qw(server sock service sentinels)};
-    return if ( $hexpire{$server} );
+    if ( my $known = $hexpire{$server} ) {
+        return unless ( ref $known );
+        my ( $retry, $die ) = @$known;
+        if ( !defined $retry or time < $retry ) {
+            die $die if ($die);
+            return;
+        }
+    }
 
-    # No index hash has this name. Other errors (read-only replica, ACL...) are
-    # left to the commands that will fail
+    # No index hash has this name. Errors other than a missing command (ACL,
+    # read-only replica...) are left to the commands that will fail. So that
+    # each tie doesn't pay a failed round trip, a missing command and NOPERM
+    # are remembered until the process ends, READONLY for $READONLY_RETRY
+    # seconds only (a Sentinel failover may promote the replica). Other errors
+    # may be transient
     unless (
         eval {
             $redisObj->hexpire( $HASH_INDEX_PREFIX, 1, 'FIELDS', 1, 'x' );
@@ -86,8 +101,20 @@ sub _checkHexpire {
       )
     {
         ( my $err = $@ ) =~ s/\n.*//s;
-        die "utimeOffset needs Redis >= 7.4 or Valkey >= 9: $err\n"
-          if ( $err =~ /unknown command/i );
+        if ( $err =~ /unknown command/i ) {
+            my $die = "utimeOffset needs Redis >= 7.4 or Valkey >= 9: $err\n";
+            $hexpire{$server} = [ undef, $die ];
+            die $die;
+        }
+        if ( $err =~ /\bNOPERM\b/ ) {
+            $hexpire{$server} = [undef];
+        }
+        elsif ( $err =~ /\bREADONLY\b/ ) {
+            $hexpire{$server} = [ time + $READONLY_RETRY ];
+        }
+        else {
+            delete $hexpire{$server};
+        }
         return;
     }
     $hexpire{$server} = 1;
@@ -159,9 +186,13 @@ sub _writeHashIndex {
     }
     if ( my $err = $queueErr // $execErr ) {
         die "utimeOffset needs Redis >= 7.4 or Valkey >= 9: $err\n"
-          if ( $err =~ /hexpire/i );
+          if ( $err =~ /unknown command/i );
         die "$err\n";
     }
+    die "[exec] unexpected reply\n"
+      unless ( ref($reply) eq 'ARRAY'
+        and @$reply == @cmds
+        and !grep { ref($_) ne 'ARRAY' } @$reply );
     foreach ( 0 .. $#cmds ) {
         my $err = $reply->[$_]->[1];
         die "[$cmds[$_]->[0]] $err\n" if ( defined $err and $cmds[$_]->[1] );
@@ -211,7 +242,7 @@ sub insert {
       : [ split /\s+/, $session->{args}->{Index} ];
 
     return $self->_writeHashIndex( $session, $index )
-      if ( hashIndex( $session->{args} ) );
+      if ( @$index and hashIndex( $session->{args} ) );
     my $id = $session->{data}->{_session_id};
     $self->_set($session);
     foreach my $i (@$index) {
@@ -396,11 +427,16 @@ must be explicitly deleted or purged.
 
 Optional, in seconds. With C<Index>, it requires Redis 7.4 or Valkey 9
 (C<HEXPIRE>), checked when the session is tied, and the C<MULTI> and
-C<HEXPIRE> commands must be allowed (ACL, proxy). A session with a numeric C<_utime> expires at
-C<_utime + utimeOffset>, and so do its index entries. Its Redis TTL is
-computed when it is written, and isn't moved by an update that keeps
-C<_utime>. A session already expired is kept 1 second. Sessions without such
-a C<_utime> get C<TTL>, if set. C<0> disables this option.
+C<HEXPIRE> commands must be allowed (ACL, proxy). A session with a numeric
+C<_utime> expires at C<_utime + utimeOffset>, and so do its index entries.
+Its Redis TTL is computed when it is written, and isn't moved by an update
+that keeps C<_utime>. A session already expired is kept 1 second. Sessions
+without such a C<_utime> get C<TTL>, if set. C<0> disables this option.
+
+All the nodes sharing the sessions must use the same C<utimeOffset>,
+C<Index> and C<TTL>. A node without C<utimeOffset> rewrites a session
+without this expiration (only C<TTL>, if set), and indexes it in the index
+sets while its entries stay in the index hashes until they expire.
 
 Lemonldap::NG considers that a session expires at C<_utime + timeout> (it
 shifts C<_utime> of the sessions that have their own lifetime, such as OpenID
@@ -417,7 +453,8 @@ B<Index>: Redis can't expire the members of a set, so the index entries of a
 session that expires are the fields of an index hash, C<hidx:field_value>,
 that expire with the session. The entries of sessions that don't expire stay
 in the index set C<field_value>. The session and its index entries are
-written in one transaction (C<MULTI>). Searches read both.
+written in one transaction (C<MULTI>). Searches read both. The C<hidx:>
+prefix is reserved: no indexed field name may start with it.
 
 Index sets written before C<utimeOffset> was set are still read: a session
 leaves them when it is written again, deleted or purged.

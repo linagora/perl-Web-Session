@@ -31,8 +31,9 @@ sub _keyName {
     return Web::Session::Store::Redis::keyName(@_);
 }
 
-# Index sets, plus index hashes with utimeOffset: [ name, is a hash ]. Only
-# ASCII is added to the name of a set
+# Index sets, plus index hashes with utimeOffset: [ name, is a hash ]. The
+# prefix is ASCII, so the name of a hash keeps the Latin-1 or UTF-8 encoding
+# of the name of the set
 sub _indexNames {
     my ( $args, $name ) = @_;
     return (
