@@ -393,6 +393,12 @@ before the failure: C<0>, unless a purge that deletes in several steps (LDAP,
 for example) failed midway. Lemonldap::NG then falls back to its slower purge,
 reading all sessions. Redis dies if the server fails.
 
+=item updateKeys()
+
+PgJSON and Patroni only. Returns 1 when the session was updated, 0 when no
+session has this id; a database error dies, so that the caller can fall back
+to a tie. See "updateKeys()" in L<Web::Session::PgJSON>.
+
 =back
 
 So an empty result of searchLt() or searchGt() doesn't always mean that no

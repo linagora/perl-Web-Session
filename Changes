@@ -4,6 +4,9 @@ Unreleased
     - Redis: new utimeOffset option (Redis >= 7.4 or Valkey >= 9): sessions
       and their index entries expire at _utime + utimeOffset (persistent
       sessions excluded), see Web::Session::Store::Redis
+    - PgJSON and Patroni: new updateKeys() class method, sets or deletes some
+      keys of a session in one statement, without reading it, see
+      Web::Session::PgJSON
 
 1.0.0 (Web::Session, fork of Apache::Session::Browseable 1.4.0)
     - Fork of Apache::Session::Browseable, renamed Web::Session

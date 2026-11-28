@@ -62,6 +62,7 @@ t/Web-Session-PgJSON-classPool.t
 t/Web-Session-PgJSON-GinIndex.t
 t/Web-Session-PgJSON-noPool.t
 t/Web-Session-PgJSON-purgeBatches.t
+t/Web-Session-PgJSON-updateKeys.t
 t/Web-Session-PgJSON.t
 t/Web-Session-populate.t
 t/Web-Session-quoteColumn.t
