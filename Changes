@@ -1,5 +1,10 @@
 Revision history for Perl extension Web::Session (formerly Apache::Session::Browseable).
 
+Unreleased
+    - Redis: new utimeOffset option (Redis >= 7.4 or Valkey >= 9): sessions
+      and their index entries expire at _utime + utimeOffset (persistent
+      sessions excluded), see Web::Session::Store::Redis
+
 1.0.0 (Web::Session, fork of Apache::Session::Browseable 1.4.0)
     - Fork of Apache::Session::Browseable, renamed Web::Session
       (https://github.com/linagora/perl-Web-Session)
