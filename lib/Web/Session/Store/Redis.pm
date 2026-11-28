@@ -4,6 +4,9 @@ use strict;
 
 our $VERSION = '1.0.0';
 
+# Key of the session object holding the result of update(), see "DESCRIPTION"
+use constant STATUS => 'web_session_redis_update';
+
 our $redis;
 our %reused_connections;
 
@@ -141,21 +144,37 @@ sub _ttl {
     return $args->{TTL};
 }
 
+# @opts: options of SET after the expiration
 sub _set {
-    my ( $self, $session ) = @_;
+    my ( $self, $session, @opts ) = @_;
     my $ttl = _ttl($session);
-    $self->{cache}->set(
+    return $self->{cache}->set(
         $session->{data}->{_session_id},
-        $session->{serialized}, ( $ttl ? ( 'EX', $ttl ) : () )
+        $session->{serialized}, ( $ttl ? ( 'EX', $ttl ) : () ), @opts
     );
+}
+
+# XX: another process may have deleted the session (logout, revocation,
+# purge) or Redis may have expired it since it was read; a plain SET would
+# write it back
+sub _overwrite {
+    my ( $self, $session ) = @_;
+    return 1 if ( defined $self->_set( $session, 'XX' ) );
+    _warnDeleted( $session->{data}->{_session_id} );
+    return 0;
+}
+
+sub _warnDeleted {
+    warn "Session '$_[0]' was deleted or expired, not stored again\n";
 }
 
 # With utimeOffset, the session and its index entries are written in one
 # transaction. The entries of a session that expires are fields of an index
 # hash that expire with it (HEXPIRE: Redis >= 7.4, Valkey >= 9; otherwise
-# Redis refuses the whole transaction); the others stay in index sets
+# Redis refuses the whole transaction); the others stay in index sets. $xx:
+# overwrite an existing session only. Returns false if it doesn't exist
 sub _writeHashIndex {
-    my ( $self, $session, $index, $old ) = @_;
+    my ( $self, $session, $index, $old, $xx ) = @_;
     my $r   = $self->{cache};
     my $ttl = _ttl($session);
     my ( @cmds, $queueErr, $reply, $execErr );
@@ -164,14 +183,14 @@ sub _writeHashIndex {
     # transaction. Other errors are ignored (key of another type)
     my $queue = sub {
         my ( $cmd, $fatal, @args ) = @_;
-        push @cmds, [ $cmd, $fatal ];
+        push @cmds, [ $cmd, $fatal, @args ];
         $r->$cmd( @args,
             sub { $queueErr //= "[$cmd] $_[1]" if ( defined $_[1] ) } );
     };
     my $sent = eval {
         $r->multi(
             sub { $queueErr //= "[multi] $_[1]" if ( defined $_[1] ) } );
-        $self->_queueHashIndex( $queue, $session, $index, $old, $ttl );
+        $self->_queueHashIndex( $queue, $session, $index, $old, $ttl, $xx );
         $r->exec( sub { ( $reply, $execErr ) = @_ } );
         $r->wait_all_responses;
         1;
@@ -197,14 +216,24 @@ sub _writeHashIndex {
         my $err = $reply->[$_]->[1];
         die "[$cmds[$_]->[0]] $err\n" if ( defined $err and $cmds[$_]->[1] );
     }
+    return 1 if ( defined $reply->[0]->[0] );
+
+    # SET XX refused: the entries added in the transaction are orphans
+    foreach ( grep { $_->[0] =~ /^(?:hset|sadd)\z/ } @cmds ) {
+        my ( $cmd, undef, $name, $id ) = @$_;
+        eval { $cmd eq 'hset' ? $r->hdel( $name, $id ) : $r->srem( $name, $id ) };
+    }
+    return 0;
 }
 
 sub _queueHashIndex {
-    my ( $self, $queue, $session, $index, $old, $ttl ) = @_;
+    my ( $self, $queue, $session, $index, $old, $ttl, $xx ) = @_;
     my $data = $session->{data};
     my $id   = $data->{_session_id};
     $queue->(
-        'set', 1, $id, $session->{serialized}, ( $ttl ? ( 'EX', $ttl ) : () )
+        'set', 1, $id, $session->{serialized},
+        ( $ttl ? ( 'EX', $ttl ) : () ),
+        ( $xx  ? 'XX'           : () )
     );
     foreach my $i (@$index) {
         my $old_val = $old ? $old->{$i} : undef;
@@ -241,18 +270,32 @@ sub insert {
       ? $session->{args}->{Index}
       : [ split /\s+/, $session->{args}->{Index} ];
 
-    return $self->_writeHashIndex( $session, $index )
-      if ( @$index and hashIndex( $session->{args} ) );
-    my $id = $session->{data}->{_session_id};
-    $self->_set($session);
-    foreach my $i (@$index) {
-        my $t = $session->{data}->{$i};
-        next unless ( defined($t) and ( length($t) > 0 ) );
-        $self->{cache}->sadd( keyName("${i}_$t"), $id );
+    if ( @$index and hashIndex( $session->{args} ) ) {
+        $self->_writeHashIndex( $session, $index );
     }
+    else {
+        my $id = $session->{data}->{_session_id};
+        $self->_set($session);
+        foreach my $i (@$index) {
+            my $t = $session->{data}->{$i};
+            next unless ( defined($t) and ( length($t) > 0 ) );
+            $self->{cache}->sadd( keyName("${i}_$t"), $id );
+        }
+    }
+    $session->{ +STATUS } = 'written';
+    return 1;
 }
 
+# True if the session was stored
 sub update {
+    my ( $self, $session ) = @_;
+    delete $session->{ +STATUS };
+    $session->{ +STATUS } = $self->_update($session);
+    return $session->{ +STATUS } eq 'deleted' ? 0 : 1;
+}
+
+# Returns the status of the update, see "DESCRIPTION"
+sub _update {
     my ( $self, $session ) = @_;
     my $index =
       ref( $session->{args}->{Index} )
@@ -263,8 +306,7 @@ sub update {
 
     # Nothing to clean up without index
     unless (@$index) {
-        $self->_set($session);
-        return;
+        return $self->_overwrite($session) ? 'written' : 'deleted';
     }
 
     # Read old data to clean up stale index entries
@@ -285,11 +327,14 @@ sub update {
         }
     }
 
-    return $self->_writeHashIndex( $session, $index, $old_data )
-      if ( hashIndex( $session->{args} ) );
+    if ( hashIndex( $session->{args} ) ) {
+        return 'written'
+          if ( $self->_writeHashIndex( $session, $index, $old_data, 1 ) );
+        _warnDeleted($id);
+        return 'deleted';
+    }
 
-    # Store new data
-    $self->_set($session);
+    return 'deleted' unless ( $self->_overwrite($session) );
 
     foreach my $i (@$index) {
         my $old_val = defined($old_data) ? $old_data->{$i} : undef;
@@ -310,6 +355,7 @@ sub update {
             $self->{cache}->sadd( keyName("${i}_$new_val"), $id );
         }
     }
+    return 'written';
 }
 
 sub materialize {
@@ -406,6 +452,29 @@ Apache::Session::Store
 
 This module is an implementation of Web::Session. It uses the
 Redis storage system.
+
+An update overwrites the session only if its key still exists
+(C<SET ... XX>): a session deleted (logout, revocation, purge) or expired
+since it was tied is not written back nor indexed again; a warning is printed
+instead.
+
+C<update()> returns true if the session was stored, false otherwise, and
+records the outcome in C<< $session->{web_session_redis_update} >>:
+
+=over
+
+=item * C<written>: the session was stored;
+
+=item * C<deleted>: the session was deleted or expired, it was not stored.
+
+=back
+
+A wrapper that caches the session before calling C<update()>, such as the
+local cache of Lemonldap::NG, keeps a session deleted meanwhile in its cache
+until the cache entry expires: the session is not stored again, but this node
+still serves it from its cache. To avoid it, a wrapper should cache
+C<< $session->{serialized} >> after C<update()>, and only if it returned
+true.
 
 =head1 OPTIONS
 

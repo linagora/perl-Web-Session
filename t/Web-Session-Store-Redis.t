@@ -8,7 +8,7 @@ BEGIN { *CORE::GLOBAL::time = sub () { $main::fakeTime // CORE::time } }
 
 # Store::Redis::update with a mock Redis object (no server needed)
 package MockRedis;
-sub new { bless { calls => [] }, shift }
+sub new { my ( $class, %res ) = @_; bless { calls => [], res => \%res }, $class }
 
 sub AUTOLOAD {
     my $self = shift;
@@ -16,7 +16,7 @@ sub AUTOLOAD {
     ( my $m = $AUTOLOAD ) =~ s/.*:://;
     return if $m eq 'DESTROY';
     push @{ $self->{calls} }, [ $m, @_ ];
-    return;
+    return $self->{res}->{$m};
 }
 
 package main;
@@ -24,40 +24,95 @@ package main;
 plan skip_all => 'Redis module is needed'
   unless eval { require Web::Session::Store::Redis; 1 };
 
+# %res: replies of the mock, SET replies OK unless set => undef
 sub run {
-    my ( $index, %extra ) = @_;
-    my $store = bless { cache => MockRedis->new },
+    my ( $index, $extra, %res ) = @_;
+    %res = ( set => 'OK', %res );
+    my $store = bless { cache => MockRedis->new(%res) },
       'Web::Session::Store::Redis';
     my $unserialized = 0;
-    $store->update(
-        {
-            data       => { _session_id => 'id1', uid => 'dwho' },
-            serialized => '{}',
-            args       => { Index => $index, %extra },
-            unserialize => sub { $unserialized++ },
-        }
-    );
-    return ( $store->{cache}->{calls}, $unserialized );
+    my @warnings;
+    local $SIG{__WARN__} = sub { push @warnings, @_ };
+    my $session = {
+        data        => { _session_id => 'id1', uid => 'dwho' },
+        serialized  => '{}',
+        args        => { Index => $index, %{ $extra || {} } },
+        unserialize => sub {
+            $unserialized++;
+            $_[0]->{data} = { _session_id => 'id1', uid => 'rtyler' };
+        },
+    };
+    my $ret = $store->update($session);
+    return ( $store->{cache}->{calls}, $unserialized, \@warnings, $session,
+        $ret );
 }
 
-my ( $calls, $unser ) = run('');
-is_deeply( $calls, [ [ 'set', 'id1', '{}' ] ],
-    'Without index: session written, no read' );
-is( $unser, 0, 'Without index: old session not decoded' );
+my $STATUS = Web::Session::Store::Redis::STATUS();
 
-( $calls, $unser ) = run( '', TTL => 10 );
-is_deeply( $calls, [ [ 'set', 'id1', '{}', 'EX', 10 ] ],
+my ( $calls, $unser, $warn, $stored, $ret ) = run('');
+is_deeply( $calls, [ [ 'set', 'id1', '{}', 'XX' ] ],
+    'Without index: session overwritten, no read' );
+is( $ret, 1, 'Without index: update() returns true' );
+is( $stored->{$STATUS}, 'written', 'Without index: status' );
+is( $unser, 0, 'Without index: old session not decoded' );
+is_deeply( $warn, [], 'Without index: no warning' );
+
+( $calls, $unser ) = run( '', { TTL => 10 } );
+is_deeply( $calls, [ [ 'set', 'id1', '{}', 'EX', 10, 'XX' ] ],
     'Without index: TTL is kept' );
 
 ( $calls, $unser ) = run( [] );
-is_deeply( $calls, [ [ 'set', 'id1', '{}' ] ], 'Empty index list' );
+is_deeply( $calls, [ [ 'set', 'id1', '{}', 'XX' ] ], 'Empty index list' );
 
-( $calls, $unser ) = run('uid');
+( $calls, $unser, $warn, $stored, $ret ) = run('uid');
+is( $ret, 1, 'With index: update() returns true' );
+is( $stored->{$STATUS}, 'written', 'With index: status' );
 is_deeply(
     [ map { $_->[0] } @$calls ],
     [qw(get set sadd)],
     'With index: old session read, index updated'
 );
+is_deeply( $calls->[1], [ 'set', 'id1', '{}', 'XX' ],
+    'With index: session overwritten' );
+is_deeply( $warn, [], 'With index: no warning' );
+
+( $calls, $unser ) = run( 'uid', { TTL => 10 }, get => '{}' );
+is_deeply(
+    $calls,
+    [
+        [ 'get', 'id1' ],
+        [ 'set', 'id1', '{}', 'EX', 10, 'XX' ],
+        [ 'srem', 'uid_rtyler', 'id1' ],
+        [ 'sadd', 'uid_dwho',   'id1' ],
+    ],
+    'With index and TTL: old index entry replaced'
+);
+
+# Session deleted or expired since it was read: SET XX replies nil
+foreach my $case (
+    [ 'without index',          '' ],
+    [ 'without index, with TTL', '', { TTL => 10 } ],
+    [ 'with index',             'uid' ],
+    [ 'with index and TTL', 'uid', { TTL => 10 }, get => '{}' ],
+  )
+{
+    my ( $name, $index, $extra, %res ) = @$case;
+    ( $calls, $unser, $warn, $stored, $ret ) =
+      run( $index, $extra, %res, set => undef );
+    is( $ret, 0, "Deleted session, $name: update() returns false" );
+    is( $stored->{$STATUS}, 'deleted', "Deleted session, $name: status" );
+    my @set = grep { $_->[0] eq 'set' } @$calls;
+    is( scalar(@set), 1, "Deleted session, $name: one SET" );
+    is( $set[0]->[-1], 'XX', "Deleted session, $name: SET XX" );
+    is_deeply( [ grep { $_->[0] =~ /^s(?:add|rem)$/ } @$calls ],
+        [], "Deleted session, $name: index sets untouched" );
+    is( scalar(@$warn), 1, "Deleted session, $name: one warning" );
+    like(
+        $warn->[0] // '',
+        qr/'id1' was deleted or expired/,
+        "Deleted session, $name: warning names the session"
+    );
+}
 
 # utimeOffset: expiration computed from _utime
 sub ttl {
@@ -152,14 +207,13 @@ sub tx {
     my $old_raw = $old ? 'old' : undef;
     no warnings qw(redefine once);
     local *MockTx::get = sub { push @{ $_[0]->{calls} }, ['get']; $old_raw };
-    $store->$method(
-        {
-            data => { _session_id => 'id1', %$data },
-            serialized  => '{}',
-            args        => { Index => 'uid', utimeOffset => 60, %args },
-            unserialize => sub { $_[0]->{data} = $old },
-        }
-    );
+    my $session = {
+        data        => { _session_id => 'id1', %$data },
+        serialized  => '{}',
+        args        => { Index => 'uid', utimeOffset => 60, %args },
+        unserialize => sub { $_[0]->{data} = $old },
+    };
+    my $ret = $store->$method($session);
     my @calls = grep { $_->[0] ne 'get' } @{ $store->{cache}->{calls} };
 
     # The expiration is checked apart
@@ -168,7 +222,7 @@ sub tx {
         if ( $_->[0] eq 'set' and @$_ > 3 ) { push @ttl, splice( @$_, 4 ) }
         if ( $_->[0] eq 'hexpire' ) { push @ttl, splice( @$_, 2, 1, 'TTL' ) }
     }
-    return ( \@calls, \@ttl );
+    return ( \@calls, \@ttl, $session, $ret );
 }
 
 {
@@ -187,6 +241,10 @@ sub tx {
     );
     near( $ttl->[0], 60, 'insert: session expiration' );
     is( $ttl->[1], $ttl->[0], 'insert: index entry expires with the session' );
+    my ( undef, undef, $inserted, $insertRet ) =
+      tx( 'insert', { uid => 'dwho', _utime => $now } );
+    is( $insertRet, 1, 'insert: returns true' );
+    is( $inserted->{$STATUS}, 'written', 'insert: status' );
 
     ( $calls, $ttl ) = tx( 'insert',
         { uid => 'dwho', _utime => $now, _session_kind => 'Persistent' } );
@@ -220,6 +278,34 @@ sub tx {
         [ 'multi', 'set id1', 'srem uid_old', 'hdel hidx:uid_old', 'exec' ],
         'update: removed value'
     );
+
+    my $same = { uid => 'new', _utime => $now };
+    my ( $session, $ret );
+    ( $calls, $ttl, $session, $ret ) = tx( 'update', $same, $same );
+    is( $ttl->[1], 'XX', 'update: SET XX' );
+    is( $ret, 1, 'update: returns true' );
+    is( $session->{$STATUS}, 'written', 'update: status' );
+    {
+        my @warnings;
+        local $SIG{__WARN__} = sub { push @warnings, @_ };
+        local $MockTx::execReply = [ [undef], ( [1] ) x 3 ];
+        ( $calls, $ttl, $session, $ret ) = tx( 'update', $same, $same );
+        is( $ret, 0, 'SET XX refused: update() returns false' );
+        is( $session->{$STATUS}, 'deleted', 'SET XX refused: status' );
+        is_deeply(
+            [ map { join ' ', grep { defined } @$_[ 0, 1 ] } @$calls ],
+            [
+                'multi',        'set id1',
+                'srem uid_new', 'hset hidx:uid_new',
+                'hexpire hidx:uid_new', 'exec',
+                'hdel hidx:uid_new'
+            ],
+            'SET XX refused: added index entry removed'
+        );
+        is( scalar(@warnings), 1, 'SET XX refused: warning' );
+        like( $warnings[0], qr/'id1' was deleted or expired/,
+            'SET XX refused: message' );
+    }
 
     local $MockTx::queueErr{hexpire} =
       "ERR unknown command 'HEXPIRE', with args beginning with: ...";

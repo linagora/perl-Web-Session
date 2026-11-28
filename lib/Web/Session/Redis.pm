@@ -736,6 +736,9 @@ sessions and add the capability to index some fields to make research faster.
 
 This module use either L<Redis::Fast> or L<Redis>.
 
+Untying a session never recreates it if it was deleted or expired since it
+was tied (see L<Web::Session::Store::Redis>).
+
 =head1 searchLt() AND searchGt()
 
   # Sessions where _oidcRtUpdate < $time (or > $time)
