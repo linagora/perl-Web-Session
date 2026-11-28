@@ -1576,6 +1576,94 @@ EOS
     }
 
     # Table name in upper case: it must reach the table created without quotes
+    # updateKeys(): keys set or deleted in one statement, without reading
+    # the session (backends that have it)
+    if ( $class->can('updateKeys') ) {
+        $group->(
+            updateKeys => sub {
+                $reset->();
+                my $id = $newSession->(
+                    uid    => 'dwho',
+                    mail   => 'old@badwolf.org',
+                    _utime => 100
+                );
+                my $read = sub {
+                    my %s;
+                    tie %s, $class, $id, $args;
+                    my %d = %s;
+                    untie %s;
+                    return \%d;
+                };
+
+                # Changed by another process after the caller read it
+                my %s;
+                tie %s, $class, $id, $args;
+                $s{cn} = 'Doctor';
+                untie %s;
+
+                my $utf8 =
+                  $o{utf8} ? { "n\x{e9}" => "\x{c9}lodie \x{3a9}" } : {};
+                is(
+                    $class->updateKeys(
+                        $args, $id,
+                        {
+                            mail   => 'dwho@badwolf.org',
+                            list   => [ 1, { b => 2, a => 1 } ],
+                            _utime => undef,
+                            %$utf8,
+                        }
+                    ),
+                    1,
+                    'updateKeys: session updated'
+                );
+                my $d = $read->();
+                is( $d->{mail}, 'dwho@badwolf.org', 'updateKeys: key set' );
+                is_deeply(
+                    $d->{list},
+                    [ 1, { b => 2, a => 1 } ],
+                    'updateKeys: structure set'
+                );
+                ok( !exists $d->{_utime}, 'updateKeys: undef deletes' );
+                is( $d->{cn},  'Doctor', 'updateKeys: other key kept' );
+                is( $d->{uid}, 'dwho',   'updateKeys: key kept' );
+                is( $d->{_session_id}, $id, 'updateKeys: id kept' );
+                is_deeply( { map { ( $_ => $d->{$_} ) } keys %$utf8 },
+                    $utf8, 'updateKeys: non-ASCII key and value' )
+                  if (%$utf8);
+                ok(
+                    $class->searchOn( $args, 'mail', 'dwho@badwolf.org' )
+                      ->{$id},
+                    'updateKeys: searchOn finds the new value'
+                );
+
+                is( $class->updateKeys( $args, 'none', { uid => 'x' } ),
+                    0, 'updateKeys: unknown session' );
+                is( $class->updateKeys( $args, $id, { absent => undef } ),
+                    1, 'updateKeys: deleting a missing key' );
+                is(
+                    $class->updateKeys(
+                        { %$args, TableName => uc($table) },
+                        $id, { uid => 'upper' }
+                    ),
+                    1,
+                    'updateKeys: upper case table'
+                ) if ( $o{tableCase} );
+                ok( !eval { $class->updateKeys( $args, $id, {} ); 1 },
+                    'updateKeys: no change dies' );
+                ok(
+                    !eval {
+                        $class->updateKeys( $args, $id,
+                            { _session_id => 'x' } );
+                        1;
+                    },
+                    'updateKeys: _session_id is refused'
+                );
+                is( $read->()->{_session_id}, $id,
+                    'updateKeys: id unchanged' );
+            }
+        );
+    }
+
     if ( $o{tableCase} ) {
         $group->(
             tableCase => sub {

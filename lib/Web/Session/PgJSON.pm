@@ -95,6 +95,18 @@ sub _searchOnQuery {
 sub _jsonbColumn {
     my ( $class, $args, $dbh ) = @_;
     my $table = $args->{TableName} || $Apache::Session::Store::DBI::TableName;
+    my $known = defined( ( $dbh->{private_asb_pgjson_type} || {} )->{$table} );
+    my $type  = $class->_columnType( $args, $dbh );
+    warn "GinIndex ignored: $table.a_session is not jsonb\n"
+      unless ( $known or $type eq 'jsonb' );
+    return $type eq 'jsonb';
+}
+
+# Type of the a_session column (jsonb, json, text...), '' if unknown, see
+# _jsonbColumn()
+sub _columnType {
+    my ( $class, $args, $dbh ) = @_;
+    my $table = $args->{TableName} || $Apache::Session::Store::DBI::TableName;
     my $cache = $dbh->{private_asb_pgjson_type} ||= {};
     unless ( defined $cache->{$table} ) {
         ( $cache->{$table} ) = $dbh->selectrow_array(
@@ -104,10 +116,34 @@ sub _jsonbColumn {
                  AND NOT a.attisdropped},
             undef, $table
         );
-        warn "GinIndex ignored: $table.a_session is not jsonb\n"
-          unless ( $cache->{$table} || '' ) eq 'jsonb';
     }
-    return ( $cache->{$table} || '' ) eq 'jsonb';
+    return $cache->{$table} // '';
+}
+
+# One statement, the session is not read: the keys that are not in $changes
+# keep the value the database holds, also when another process changed them
+# after the caller read the session. json and text columns go through jsonb
+sub updateKeys {
+    my ( $class, $args, $id, $changes ) = @_;
+    die "updateKeys: no session id\n" unless ( defined $id and length $id );
+    die "updateKeys: changes must be a non-empty hash\n"
+      unless ( ref $changes eq 'HASH' and %$changes );
+    die "updateKeys: _session_id can't be changed\n"
+      if ( exists $changes->{_session_id} );
+    my @delete = sort grep { !defined $changes->{$_} } keys %$changes;
+    my %set    = map { ( $_ => $changes->{$_} ) }
+      grep { defined $changes->{$_} } keys %$changes;
+    my $json = Web::Session::Serialize::JSON::serialize( { data => \%set } );
+
+    my ( $dbh, $loan ) = $class->_borrowDbh($args);
+    my $table = Web::Session::_common->_tableName( $dbh, $args );
+    my $jsonb = $class->_columnType( $args, $dbh ) eq 'jsonb';
+    my $value = '(' . ( $jsonb ? 'a_session' : 'a_session::jsonb' )
+      . ' || ?::jsonb) - ?::text[]';
+    $value = "($value)::json" unless ($jsonb);
+    my $n = $dbh->do( "UPDATE $table SET a_session = $value WHERE id = ?",
+        undef, $json, \@delete, $id );
+    return ( $n and $n > 0 ) ? 1 : 0;
 }
 
 sub searchOnExpr {
@@ -707,6 +743,41 @@ Sessions without the field are never returned. This differs from the Perl
 fallback of Lemonldap::NG, where a missing field is compared as 0: searchLt()
 would then return nearly all sessions. Lemonldap::NG doesn't need them: its
 sessions purge ignores sessions without C<_oidcRtUpdate>.
+
+=head2 updateKeys()
+
+  # Set mail, delete _2fDevices, keep the other keys of the session
+  my $updated = Web::Session::PgJSON->updateKeys( $args, $id,
+      { mail => 'dwho@badwolf.org', _2fDevices => undef } );
+
+Updates some keys of a session in one statement, without reading it:
+
+  UPDATE sessions SET a_session = (a_session || ?::jsonb) - ?::text[]
+   WHERE id = ?
+
+Keys with a defined value are set (a top-level key is replaced as a whole),
+keys with C<undef> are deleted. The other keys keep the value the database
+holds, also when another process changed them after the caller read the
+session: a tie followed by an untie would write back the whole session read
+at tie. The same key changed by two processes keeps the last value written.
+
+Returns 1 when the session was updated and 0 when no session has this id (the
+caller can then create it with a tie). It dies on a database error, for
+example on a row that isn't JSON (Storable, written by very old versions):
+the caller can fall back to a tie, which rewrites it as JSON. It also dies
+without id, without change, or when C<_session_id> is given. The update is
+committed at once, as with the other class methods.
+
+C<json> and C<text> columns go through C<jsonb>: the keys of the stored text
+are reordered and duplicate keys merged, as with a C<jsonb> column. The
+expression indexes follow the new values. Unlike a tie, the update is written
+even when it doesn't change the session (see "UNCHANGED SESSIONS ARE NOT
+REWRITTEN" in L<Web::Session>). A caller that keeps a copy of the session
+(a local cache) must drop it: the method doesn't return the stored data.
+
+This also applies to L<Web::Session::Postgres> aliases and
+L<Web::Session::Patroni>. The other backends don't have this method: check
+with C<can('updateKeys')>.
 
 =head2 Persistent connection
 
