@@ -4,8 +4,10 @@ Unreleased
     - Redis: new utimeOffset option (Redis >= 7.4 or Valkey >= 9): sessions
       and their index entries expire at _utime + utimeOffset (persistent
       sessions excluded), see Web::Session::Store::Redis
-    - Security: Redis: a session or token deleted (logout, revocation,
-      purge) while another request was updating it is no longer written back
+    - Security: Redis: concurrent updates of a session are merged key by key
+      instead of losing one of them, and a session or token deleted (logout,
+      revocation, purge) while another request was updating it is no longer
+      written back (see Web::Session::Store::Redis)
 
 1.0.0 (Web::Session, fork of Apache::Session::Browseable 1.4.0)
     - Fork of Apache::Session::Browseable, renamed Web::Session

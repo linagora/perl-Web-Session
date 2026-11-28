@@ -20,10 +20,17 @@ sub populate {
     $self->{generate}     = \&Web::Session::Generate::SHA256::generate;
     $self->{validate}     = \&Web::Session::Generate::SHA256::validate;
     $self->{serialize}    = \&Web::Session::Serialize::JSON::serializeLatin1;
-    $self->{unserialize} =
-      \&Web::Session::Serialize::JSON::unserializeLatin1;
+    $self->{unserialize}  = \&_unserializeRead;
 
     return $self;
+}
+
+# Keeps the version read for the store's update(). Lemonldap::NG's local cache
+# may provide it instead of materialize(), but unserialize is always called
+sub _unserializeRead {
+    my ($session) = @_;
+    $session->{ +Web::Session::Store::Redis::READ } = $session->{serialized};
+    return Web::Session::Serialize::JSON::unserializeLatin1(@_);
 }
 
 # Key name sent to Redis, see Store::Redis::keyName()
@@ -736,8 +743,9 @@ sessions and add the capability to index some fields to make research faster.
 
 This module use either L<Redis::Fast> or L<Redis>.
 
-Untying a session never recreates it if it was deleted or expired since it
-was tied (see L<Web::Session::Store::Redis>).
+Concurrent updates of a session are merged key by key, and untying a session
+never recreates it if it was deleted or expired since it was tied (see
+L<Web::Session::Store::Redis>).
 
 =head1 searchLt() AND searchGt()
 
@@ -802,12 +810,14 @@ Latin-1 name of another value (C<uid_\x{3a9}> and C<uid_\x{ce}\x{a9}>).
 
 Index sets are updated after the session is written, without a transaction.
 If the same session is updated concurrently by two processes, a stale member
-can remain in the index set of a previous value. C<searchOn> only removes
-members whose session no longer exists and doesn't check the indexed value
-again, so such a session may be returned for a value it no longer has. With
+can remain in the index set of a previous value. The search methods check the
+value of each session they read, so it is not returned for a value it no
+longer has, but only members whose session no longer exists are removed. With
 C<utimeOffset>, the index entries are written in the same transaction as the
-session, but the previous value is read before: the same can happen. The
-stale entry then expires with the session, unless the session doesn't expire.
+session and relative to the version it replaces, so they stay consistent,
+except when a session updated concurrently too often is overwritten (see
+L<Web::Session::Store::Redis>): the stale entry then expires with the
+session, unless the session doesn't expire.
 
 =head1 SEE ALSO
 
