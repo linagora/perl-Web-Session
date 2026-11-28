@@ -67,8 +67,10 @@ t/Web-Session-populate.t
 t/Web-Session-quoteColumn.t
 t/Web-Session-quoteIdentifier.t
 t/Web-Session-Redis-batches.t
+t/Web-Session-Redis-deleted.t
 t/Web-Session-Redis-hashIndex.t
 t/Web-Session-Redis-keysRe.t
+t/Web-Session-Redis-merge.t
 t/Web-Session-Redis-orphans.t
 t/Web-Session-Redis-purge.t
 t/Web-Session-Redis-searchLtGt.t
